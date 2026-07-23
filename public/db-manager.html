@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes, viewport-fit=cover">
+    <title>数据库管理 - 随心聊</title>
+    <link rel="stylesheet" href="style.css">
+    <style>
+        .db-container {
+            max-width: 1200px;
+            margin: 20px auto;
+            background: white;
+            border-radius: 24px;
+            padding: 20px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.05);
+        }
+        .db-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+        }
+        .table-list {
+            width: 200px;
+            float: left;
+            border-right: 1px solid #eee;
+            padding-right: 16px;
+        }
+        .table-list button {
+            display: block;
+            width: 100%;
+            text-align: left;
+            padding: 8px;
+            margin-bottom: 4px;
+            background: #f5f5f5;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+        }
+        .table-list button.active {
+            background: var(--primary);
+            color: white;
+        }
+        .db-content {
+            margin-left: 220px;
+        }
+        .query-area {
+            margin-bottom: 20px;
+        }
+        .query-area textarea {
+            width: 100%;
+            height: 100px;
+            font-family: monospace;
+            padding: 8px;
+        }
+        .result-table {
+            overflow-x: auto;
+            border: 1px solid #eee;
+            border-radius: 8px;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        th, td {
+            padding: 8px;
+            border-bottom: 1px solid #eee;
+            text-align: left;
+        }
+        th {
+            background: #f5f5f5;
+        }
+        .back-link {
+            display: inline-block;
+            margin-top: 20px;
+            color: var(--primary);
+        }
+        @media (max-width: 768px) {
+            .table-list {
+                width: 100%;
+                float: none;
+                border-right: none;
+                border-bottom: 1px solid #eee;
+                margin-bottom: 16px;
+                padding-bottom: 16px;
+            }
+            .db-content {
+                margin-left: 0;
+            }
+        }
+    </style>
+</head>
+<body>
+<div class="db-container">
+    <div class="db-header">
+        <h1>🗄️ 数据库管理</h1>
+        <button id="logoutDbBtn" class="btn-secondary">退出登录</button>
+    </div>
+    <div class="table-list" id="tableList"></div>
+    <div class="db-content">
+        <div class="query-area">
+            <h3>执行 SQL 查询（仅 SELECT）</h3>
+            <textarea id="sqlInput" placeholder="SELECT * FROM users LIMIT 10"></textarea>
+            <button id="executeQueryBtn" class="btn">执行</button>
+        </div>
+        <div id="tableData" class="result-table"></div>
+    </div>
+    <a href="/admin" class="back-link">← 返回管理面板</a>
+</div>
+<script src="db-manager.js"></script>
+</body>
+</html>

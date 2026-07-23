@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes, viewport-fit=cover">
+    <title>文件清理工具 - 随心聊</title>
+    <link rel="stylesheet" href="style.css">
+    <style>
+        .clean-container {
+            max-width: 1000px;
+            margin: 20px auto;
+            background: white;
+            border-radius: 24px;
+            padding: 20px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.05);
+        }
+        .section {
+            margin-bottom: 30px;
+            border: 1px solid #eee;
+            border-radius: 16px;
+            padding: 16px;
+        }
+        .file-list {
+            max-height: 400px;
+            overflow-y: auto;
+        }
+        .file-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 8px;
+            border-bottom: 1px solid #eee;
+        }
+        .delete-btn, .delete-record-btn {
+            background: var(--danger);
+            color: white;
+            border: none;
+            padding: 4px 12px;
+            border-radius: 20px;
+            cursor: pointer;
+        }
+        .stats {
+            background: #f0f0f0;
+            padding: 12px;
+            border-radius: 12px;
+            margin-bottom: 16px;
+        }
+        .back-link {
+            display: inline-block;
+            margin-top: 20px;
+            color: var(--primary);
+            text-decoration: none;
+        }
+        @media (max-width: 768px) {
+            .file-item {
+                flex-direction: column;
+                align-items: flex-start;
+                gap: 8px;
+            }
+        }
+    </style>
+</head>
+<body>
+<div class="clean-container">
+    <h1>🧹 文件清理工具</h1>
+    <div class="stats" id="stats"></div>
+    <div class="section">
+        <h2>📁 孤儿文件（本地存在但数据库无记录）</h2>
+        <button id="deleteAllOrphansBtn" class="btn" style="margin-bottom:12px;">🗑️ 删除所有孤儿文件</button>
+        <div id="orphanFilesList" class="file-list">加载中...</div>
+    </div>
+    <div class="section">
+        <h2>❌ 缺失文件（数据库有记录但本地不存在）</h2>
+        <div id="missingFilesList" class="file-list">加载中...</div>
+    </div>
+    <a href="/admin" class="back-link">← 返回管理面板</a>
+</div>
+<script src="clean-files.js"></script>
+</body>
+</html>

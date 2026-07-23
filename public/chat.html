@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes, viewport-fit=cover">
+<title>聊天室 - 随心聊</title>
+<link rel="stylesheet" href="style.css">
+<style>
+.chat-page { max-width: 1200px; margin: 0 auto; padding: 1rem; }
+.back-home { display: inline-block; margin-bottom: 1rem; background: #f0f0f0; padding: 8px 16px; border-radius: 40px; text-decoration: none; color: #333; font-size: .9rem; }
+.chat-layout { display: flex; gap: 16px; background: white; border-radius: 24px; overflow: hidden; box-shadow: 0 4px 12px rgba(0,0,0,.05); min-height: 70vh; }
+
+.group-sidebar { width: 200px; background: #f5f7fa; padding: 12px 0; display: flex; flex-direction: column; border-right: 1px solid #eee; flex-shrink: 0; }
+.group-sidebar-header { padding: 8px 16px; font-weight: bold; color: var(--primary); font-size: .95rem; display: flex; justify-content: space-between; align-items: center; }
+.group-sidebar-actions { display: flex; gap: 4px; }
+.group-sidebar-actions button { background: none; border: none; cursor: pointer; font-size: 1rem; padding: 2px 6px; border-radius: 8px; color: var(--primary); }
+.group-sidebar-actions button:hover { background: #e0e0e0; }
+.group-list { flex: 1; overflow-y: auto; }
+.group-item { display: flex; align-items: center; gap: 8px; padding: 10px 16px; cursor: pointer; border-left: 3px solid transparent; }
+.group-item:hover { background: #eef1f5; }
+.group-item.active { background: #e0e7ef; border-left-color: var(--primary); font-weight: bold; }
+.group-item-icon { font-size: 1.3rem; width: 32px; text-align: center; }
+.group-item-info { flex: 1; min-width: 0; }
+.group-item-name { font-size: .9rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.group-item-count { font-size: .7rem; color: #999; }
+
+.message-panel { flex: 3; display: flex; flex-direction: column; background: #f9f9f9; min-width: 0; }
+.chat-header { padding: 14px 16px; border-bottom: 1px solid #eee; background: white; font-weight: bold; font-size: 1.1rem; color: var(--primary); display: flex; justify-content: space-between; align-items: center; }
+.chat-header-actions { display: flex; gap: 8px; align-items: center; }
+.chat-header-actions button { background: none; border: none; cursor: pointer; font-size: 1rem; color: var(--primary); padding: 4px 8px; border-radius: 8px; }
+.chat-header-actions button:hover { background: #f0f0f0; }
+.messages-area { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 12px; }
+.input-panel { background: white; padding: 12px; border-top: 1px solid #eee; }
+.reply-bar { background: #f0f0f0; padding: 8px; margin-bottom: 8px; border-radius: 20px; display: flex; justify-content: space-between; font-size: 13px; }
+.reply-bar.hidden { display: none; }
+.input-area { position: relative; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.input-area input { flex: 1; padding: 10px 14px; border: 1px solid #ddd; border-radius: 40px; outline: none; font-size: 14px; min-width: 80px; }
+.input-area button { background: var(--primary); border: none; padding: 8px 18px; border-radius: 40px; color: white; cursor: pointer; white-space: nowrap; }
+.input-area .emoji-btn { background: none; font-size: 1.5rem; padding: 0 8px; }
+.online-sidebar { width: 220px; background: white; padding: 16px; border-left: 1px solid #eee; display: flex; flex-direction: column; flex-shrink: 0; }
+.online-sidebar h3 { font-size: .9rem; margin-bottom: 12px; }
+.online-user { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px; border-bottom: 1px solid #f0f0f0; cursor: pointer; font-size: .85rem; }
+.online-user:hover { background: #f5f5f5; }
+.online-user-info { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; }
+.online-user-info span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.online-user img { width: 28px; height: 28px; border-radius: 50%; object-fit: cover; }
+.unread-badge { background: #fa5151; color: white; border-radius: 12px; padding: 2px 8px; font-size: 11px; min-width: 20px; text-align: center; }
+.emoji-panel { position: absolute; bottom: 60px; left: 0; background: white; border: 1px solid #ddd; padding: 8px; border-radius: 16px; width: 280px; display: none; flex-wrap: wrap; gap: 4px; z-index: 100; box-shadow: 0 2px 8px rgba(0,0,0,.1); }
+.emoji-panel span { font-size: 24px; cursor: pointer; }
+.message { display: flex; gap: 10px; align-items: flex-start; max-width: 85%; }
+.message-left { align-self: flex-start; }
+.message-right { align-self: flex-end; flex-direction: row-reverse; }
+.message-avatar { width: 36px; height: 36px; border-radius: 50%; object-fit: cover; flex-shrink: 0; }
+.message-bubble { background: white; padding: 8px 12px; border-radius: 18px; max-width: calc(100% - 46px); box-shadow: 0 1px 1px rgba(0,0,0,.05); }
+.message-right .message-bubble { background: #d9f0e3; }
+.message-name { font-size: 12px; font-weight: bold; margin-bottom: 4px; color: #666; }
+.message-text { font-size: 14px; word-wrap: break-word; }
+.message-time { font-size: 10px; color: #999; margin-top: 4px; text-align: right; }
+.system-message { background: #e5e5e5; color: #666; text-align: center; padding: 4px 12px; border-radius: 20px; font-size: 12px; align-self: center; }
+.recall-btn { background: none; border: none; color: #999; cursor: pointer; font-size: 11px; margin-left: 8px; }
+.file-message { margin-top: 4px; }
+.file-message img, .file-message video { max-width: 200px; max-height: 150px; border-radius: 8px; }
+.file-actions { display: flex; gap: 8px; margin-top: 6px; }
+.file-actions button { background: #f0f0f0; border: none; padding: 4px 8px; border-radius: 16px; font-size: 12px; cursor: pointer; }
+.modal-content { width: 500px; max-width: 90%; max-height: 80vh; overflow-y: auto; }
+.search-fields { display: flex; flex-direction: column; gap: 12px; }
+.date-inputs { display: flex; gap: 8px; align-items: center; }
+.search-results { margin-top: 16px; max-height: 300px; overflow-y: auto; }
+.search-result-item { padding: 8px; border-bottom: 1px solid #eee; cursor: pointer; }
+.search-result-item:hover { background: #f5f5f5; }
+.private-chat-window { position: fixed; bottom: 20px; right: 20px; width: 350px; background: white; border-radius: 16px; box-shadow: 0 4px 20px rgba(0,0,0,.15); z-index: 1000; display: none; flex-direction: column; }
+.private-chat-header { padding: 12px; background: var(--primary); color: white; border-radius: 16px 16px 0 0; display: flex; justify-content: space-between; }
+.private-messages-area { height: 300px; overflow-y: auto; padding: 12px; background: #f9f9f9; display: flex; flex-direction: column; }
+.private-input-area { display: flex; padding: 12px; gap: 8px; border-top: 1px solid #eee; }
+.private-input-area input { flex: 1; padding: 8px 12px; border: 1px solid #ddd; border-radius: 20px; }
+.private-message { margin-bottom: 8px; padding: 8px 12px; border-radius: 12px; max-width: 85%; }
+.private-message-sent { background: var(--primary); color: white; align-self: flex-end; margin-left: auto; }
+.private-message-received { background: white; border: 1px solid #eee; }
+#loadingMore { text-align: center; padding: 8px; color: #999; display: none; }
+
+.member-item { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-bottom: 1px solid #f0f0f0; }
+.member-item img { width: 32px; height: 32px; border-radius: 50%; }
+.member-info { flex: 1; }
+.member-name { font-size: 14px; }
+.member-role-tag { font-size: 11px; color: var(--primary); background: #e8f5e9; padding: 2px 8px; border-radius: 10px; }
+.member-actions { display: flex; gap: 6px; }
+.member-actions button { font-size: 12px; padding: 4px 10px; border: 1px solid #ddd; border-radius: 12px; background: white; cursor: pointer; }
+.member-actions .danger-btn { color: #e53935; border-color: #e53935; }
+.member-actions .danger-btn:hover { background: #fff0f0; }
+.discover-group-item { display: flex; justify-content: space-between; align-items: center; padding: 10px 12px; border-bottom: 1px solid #f0f0f0; }
+.discover-group-item .gi h4 { margin: 0; font-size: 14px; }
+.discover-group-item .gi p { margin: 2px 0 0; font-size: 12px; color: #999; }
+.btn-sm { font-size: 12px; padding: 4px 12px; border-radius: 16px; border: none; background: var(--primary); color: white; cursor: pointer; white-space: nowrap; }
+@media (max-width:900px){ .group-sidebar{width:160px} .online-sidebar{width:180px} }
+@media (max-width:768px){
+.chat-layout{flex-direction:column}
+.group-sidebar{width:100%;border-right:none;border-bottom:1px solid #eee;flex-direction:row;padding:8px;overflow-x:auto}
+.group-list{display:flex;flex-direction:row;overflow-x:auto}
+.group-item{white-space:nowrap;border-left:none;border-bottom:2px solid transparent;padding:6px 12px}
+.group-item.active{border-bottom-color:var(--primary)}
+.online-sidebar{width:100%;border-left:none;border-top:1px solid #eee;max-height:120px}
+.message{max-width:95%}
+.message-avatar{width:32px;height:32px}
+.modal-content{width:95%}
+.private-chat-window{width:95%;right:2.5%;left:2.5%}
+.emoji-panel{width:calc(100% - 20px);left:10px}
+}
+</style>
+</head>
+<body>
+<div class="chat-page">
+<a href="/" class="back-home">← 返回主界面</a>
+<div class="chat-layout">
+<div class="group-sidebar">
+<div class="group-sidebar-header"><span>📋 群聊</span><div class="group-sidebar-actions">
+<button id="createGroupBtn" title="创建群">➕</button>
+<button id="discoverGroupsBtn" title="加入群">🔍</button>
+</div></div>
+<div class="group-list" id="groupList">
+<div class="group-item active" data-group-id="0"><span class="group-item-icon">💬</span><div class="group-item-info"><div class="group-item-name">公共聊天室</div><div class="group-item-count">默认</div></div></div>
+</div></div>
+
+<div class="message-panel">
+<div class="chat-header"><span id="currentChatTitle">💬 公共聊天室</span>
+<div class="chat-header-actions">
+<button id="groupMembersBtn" title="群成员" style="display:none;">👥</button>
+<button id="privateChatListBtn" title="私聊">💬</button>
+<button id="searchBtn" title="搜索">🔍</button>
+</div></div>
+<div class="messages-area" id="messagesArea"><div id="loadingMore">⏳ 加载更早消息...</div></div>
+<div class="input-panel">
+<div id="replyBar" class="reply-bar hidden"><span id="replyContent"></span><button id="cancelReplyBtn">取消</button></div>
+<div class="input-area">
+<button id="emojiBtn" class="emoji-btn">😊</button>
+<input type="text" id="messageInput" placeholder="输入消息...">
+<button id="sendBtn">发送</button>
+<button id="fileBtn">📎 文件</button>
+<input type="file" id="fileInput" style="display:none;">
+<div id="emojiPanel" class="emoji-panel"></div>
+</div></div></div>
+
+<div class="online-sidebar"><h3>在线 (<span id="onlineCount">0</span>)</h3><div id="onlineList" style="flex:1;overflow-y:auto;"></div></div>
+</div></div>
+
+<div id="searchModal" class="modal" style="display:none;"><div class="modal-content"><h3>搜索消息</h3><div class="search-fields"><div class="input-group"><label>关键词</label><input type="text" id="searchKeyword"></div><div class="input-group"><label>用户名</label><input type="text" id="searchUsername"></div><div class="date-inputs"><input type="date" id="searchStartDate"><span>至</span><input type="date" id="searchEndDate"></div><div class="input-group"><label>类型</label><select id="searchType"><option value="all">全部</option><option value="mine">我的</option></select></div><button id="doSearchBtn" class="btn">搜索</button></div><div id="searchResults" class="search-results"></div><div class="modal-buttons"><button id="closeSearchModalBtn">关闭</button></div></div></div>
+
+<div id="privateChatWindow" class="private-chat-window"><div class="private-chat-header" id="privateChatHeader"><span>私聊</span><button id="closePrivateChatBtn" style="background:none;border:none;color:white;cursor:pointer;">✕</button></div><div class="private-messages-area" id="privateMessagesArea"></div><div class="private-input-area"><input type="text" id="privateInput" placeholder="输入私聊..."><button id="sendPrivateBtn">发送</button></div></div>
+
+<div id="createGroupModal" class="modal" style="display:none;"><div class="modal-content"><h3>创建群聊</h3><div class="search-fields"><div class="input-group"><label>群名称</label><input type="text" id="newGroupName" maxlength="20" placeholder="1-20字"></div><div class="input-group"><label>简介</label><input type="text" id="newGroupDesc" maxlength="100" placeholder="可选"></div><button id="doCreateGroupBtn" class="btn">创建</button></div><div class="modal-buttons"><button id="closeCreateGroupBtn">取消</button></div></div></div>
+
+<div id="discoverGroupsModal" class="modal" style="display:none;"><div class="modal-content"><h3>发现群聊</h3><div id="discoverGroupList"></div><div class="modal-buttons"><button id="closeDiscoverGroupsBtn">关闭</button></div></div></div>
+
+<div id="groupMembersModal" class="modal" style="display:none;"><div class="modal-content"><h3>群成员 <span id="memberCount">0</span></h3><div id="groupMemberList"></div><div class="modal-buttons"><button id="closeGroupMembersBtn">关闭</button></div></div></div>
+
+<script src="/socket.io/socket.io.js"></script>
+<script src="chat.js"></script>
+<script src="common.js"></script>
+</body>
+</html>

@@ -1,0 +1,443 @@
+// routes/files.js
+const express = require('express');
+const router = express.Router();
+const multer = require('multer');
+const path = require('path');
+const fs = require('fs').promises;
+const fsSync = require('fs');
+const { PassThrough } = require('stream');
+const db = require('../db/connection');
+const { storage, fileFilter } = require('../config/multer');
+const { FILE_SIZE_LIMITS } = require('../config');
+const { logToFile } = require('../utils/logger');
+const { isLoggedIn } = require('../middleware/auth');
+const { checkFilesUploadBan, checkFilesDownloadBan } = require('../middleware/banCheck');
+const { checkFileAccess, getUserRootId, isUnderUserRoot } = require('../middleware/fileAccess');
+const { safePath } = require('../utils/safePath');
+const { validateFileType } = require('../utils/fileValidator');
+
+const UPLOAD_BASE = path.join(__dirname, '../uploads');
+
+// ---------- 全局容量辅助函数（原子更新）----------
+function getGlobalUsedBytes() {
+    const row = db.prepare('SELECT value FROM system_config WHERE key = ?').get('total_upload_bytes');
+    return row ? parseInt(row.value) : 0;
+}
+
+// 原子增加/减少全局已用容量
+function updateGlobalUsedBytesAtomically(delta) {
+    const deltaInt = parseInt(delta);
+    const stmt = db.prepare(`UPDATE system_config SET value = CAST(value AS INTEGER) + ?, updated_at = CURRENT_TIMESTAMP WHERE key = ?`);
+    stmt.run(deltaInt, 'total_upload_bytes');
+    return getGlobalUsedBytes();
+}
+
+function getGlobalMaxBytes() {
+    const row = db.prepare('SELECT value FROM system_config WHERE key = ?').get('max_global_upload_bytes');
+    return row ? parseInt(row.value) : 10 * 1024 * 1024 * 1024;
+}
+
+// ---------- 个人容量辅助函数 ----------
+function getUserUsedBytes(userId) {
+    const userRootId = getUserRootId(userId);
+    const files = db.prepare('SELECT fileSize FROM file_nodes WHERE parentId = ? AND isFolder = 0').all(userRootId);
+    let total = 0;
+    for (const f of files) total += f.fileSize || 0;
+    return total;
+}
+const USER_MAX_BYTES = 100 * 1024 * 1024; // 100MB
+
+// ---------- 获取存储信息 ----------
+router.get('/api/user/storage', isLoggedIn, async (req, res) => {
+    try {
+        const userId = req.userId;
+        const user = db.prepare('SELECT role FROM users WHERE userId = ?').get(userId);
+        if (user && user.role === 'admin') {
+            const globalUsed = getGlobalUsedBytes();
+            const globalMax = getGlobalMaxBytes();
+            return res.json({ 
+                success: true, unlimited: true,
+                globalUsed, globalMax,
+                globalUsedGB: (globalUsed / 1024 / 1024 / 1024).toFixed(2),
+                globalMaxGB: (globalMax / 1024 / 1024 / 1024).toFixed(0)
+            });
+        }
+        const personalUsed = getUserUsedBytes(userId);
+        const personalMax = USER_MAX_BYTES;
+        const globalUsed = getGlobalUsedBytes();
+        const globalMax = getGlobalMaxBytes();
+        res.json({ 
+            success: true,
+            personalUsed, personalMax,
+            personalUsedMB: (personalUsed / 1024 / 1024).toFixed(2),
+            personalMaxMB: (personalMax / 1024 / 1024).toFixed(0),
+            globalUsed, globalMax,
+            globalUsedGB: (globalUsed / 1024 / 1024 / 1024).toFixed(2),
+            globalMaxGB: (globalMax / 1024 / 1024 / 1024).toFixed(0)
+        });
+    } catch (err) {
+        console.error('/api/user/storage error:', err);
+        res.status(500).json({ success: false, message: err.message });
+    }
+});
+
+// 获取文件列表
+router.get('/api/file/list', isLoggedIn, checkFileAccess, (req, res) => {
+    const { parentId } = req.query;
+    let targetParentId = parseInt(parentId) || 0;
+    const isAdmin = req.isAdmin;
+    const userRootId = req.userRootId;
+    try {
+        const items = db.prepare(`
+            SELECT f.*
+            FROM file_nodes f
+            WHERE f.parentId = ?
+            ORDER BY f.isFolder DESC, f.name ASC
+        `).all(targetParentId);
+        for (let item of items) {
+            if (isAdmin) item.canWrite = true;
+            else {
+                if (item.isFolder) item.canWrite = (item.id === userRootId) || isUnderUserRoot(item.id, userRootId);
+                else item.canWrite = (item.parentId === userRootId) || isUnderUserRoot(item.parentId, userRootId);
+            }
+        }
+        res.json({ success: true, items });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ success: false, message: '服务器错误' });
+    }
+});
+
+// 获取星标文件
+router.get('/api/file/starred', isLoggedIn, checkFileAccess, (req, res) => {
+    const userId = req.userId;
+    try {
+        const items = db.prepare(`
+            SELECT f.*
+            FROM file_nodes f
+            WHERE f.starred = 1 AND f.uploaderId = ?
+            ORDER BY f.updatedAt DESC
+        `).all(userId);
+        for (let item of items) item.canWrite = true;
+        res.json({ success: true, items });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ success: false, message: '服务器错误' });
+    }
+});
+
+// 获取文件/文件夹信息
+router.get('/api/file/info/:id', isLoggedIn, checkFileAccess, (req, res) => {
+    const id = req.params.id;
+    try {
+        const item = db.prepare('SELECT id, name, parentId, isFolder FROM file_nodes WHERE id = ?').get(Number(id));
+        if (!item) return res.status(404).json({ success: false, message: '文件不存在' });
+        let canWrite = false;
+        if (req.isAdmin) canWrite = true;
+        else {
+            if (item.isFolder) canWrite = (item.id === req.userRootId) || isUnderUserRoot(item.id, req.userRootId);
+            else canWrite = (item.parentId === req.userRootId) || isUnderUserRoot(item.parentId, req.userRootId);
+        }
+        item.canWrite = canWrite;
+        res.json({ success: true, item });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ success: false, message: '服务器错误' });
+    }
+});
+
+// 创建文件夹（仅管理员）
+router.post('/api/file/folder', isLoggedIn, checkFilesUploadBan, checkFileAccess, (req, res) => {
+    const { name, parentId } = req.body;
+    if (!name) return res.status(400).json({ success: false, message: '文件夹名称不能为空' });
+    if (!req.isAdmin) return res.status(403).json({ success: false, message: '只有管理员可以创建文件夹' });
+    let targetParentId = parseInt(parentId) || 0;
+    try {
+        const existing = db.prepare('SELECT * FROM file_nodes WHERE parentId = ? AND name = ?').get(targetParentId, name);
+        if (existing) return res.status(400).json({ success: false, message: '同名文件夹已存在' });
+        db.prepare('INSERT INTO file_nodes (name, parentId, isFolder) VALUES (?, ?, ?)').run(name, targetParentId, 1);
+        res.json({ success: true });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ success: false, message: '服务器错误' });
+    }
+});
+
+// 上传文件（原子更新全局容量）
+router.post('/api/file/upload', isLoggedIn, checkFilesUploadBan, checkFileAccess, (req, res, next) => {
+    const userId = req.userId;
+    const isAdmin = req.isAdmin;
+    const limit = isAdmin ? FILE_SIZE_LIMITS.admin : FILE_SIZE_LIMITS.user;
+    const uploadSingle = multer({ storage, fileFilter, limits: { fileSize: limit } }).single('file');
+    uploadSingle(req, res, (err) => {
+        if (err) {
+            if (err.code === 'FILE_TOO_LARGE') {
+                return res.status(413).json({ success: false, message: `文件过大，${isAdmin ? '管理员最大1GB' : '普通用户最大50MB'}` });
+            }
+            return res.status(400).json({ success: false, message: err.message });
+        }
+        next();
+    });
+}, async (req, res) => {
+    if (!req.file) return res.status(400).json({ success: false, message: '未上传文件' });
+    // 验证文件真实内容
+    const validation = validateFileType(req.file.path, req.file.mimetype);
+    if (!validation.valid) {
+        try { fsSync.unlinkSync(req.file.path); } catch(e) {}
+        return res.status(400).json({ success: false, message: '文件类型验证失败：' + validation.reason });
+    }
+    const userId = req.userId;
+    const isAdmin = req.isAdmin;
+    const user = db.prepare('SELECT username, role FROM users WHERE userId = ?').get(userId);
+    let { parentId } = req.body;
+    let targetParentId = parseInt(parentId) || 0;
+    
+    if (!isAdmin) {
+        // 检查个人容量
+        const personalUsed = getUserUsedBytes(userId);
+        if (personalUsed + req.file.size > USER_MAX_BYTES) {
+            return res.status(413).json({ success: false, message: `个人网盘容量已达上限 100MB，无法上传` });
+        }
+        // 检查全局容量
+        const globalUsed = getGlobalUsedBytes();
+        const globalMax = getGlobalMaxBytes();
+        if (globalUsed + req.file.size > globalMax) {
+            return res.status(413).json({ success: false, message: `普通用户上传总容量已达上限 10GB，无法继续上传` });
+        }
+        // 检查目录权限
+        const userRootId = req.userRootId;
+        if (targetParentId !== userRootId && !isUnderUserRoot(targetParentId, userRootId)) {
+            return res.status(403).json({ success: false, message: '无权限上传到此目录' });
+        }
+    }
+    
+    const fileUrl = `/uploads/public_files/${req.file.filename}`;
+    try {
+        db.prepare(`INSERT INTO file_nodes (name, parentId, isFolder, fileUrl, fileType, fileSize, originalName, uploaderId, uploaderName, createdAt, updatedAt)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`).run(
+            req.file.originalname, targetParentId, 0, fileUrl, req.file.mimetype, req.file.size, req.file.originalname, userId, user.username);
+        
+        db.prepare(`INSERT INTO user_traffic (user_id, type, bytes, path) VALUES (?, 'upload', ?, ?)`).run(userId, req.file.size, req.file.originalname);
+        
+        if (!isAdmin) {
+            updateGlobalUsedBytesAtomically(req.file.size);
+        }
+        
+        logToFile(`[网盘上传] 用户 ${user.username} 上传文件: ${req.file.originalname} (${req.file.size} bytes)`);
+        res.json({ success: true });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ success: false, message: '服务器错误' });
+    }
+});
+
+// 重命名文件/文件夹
+router.put('/api/file/rename/:id', isLoggedIn, checkFilesUploadBan, checkFileAccess, (req, res) => {
+    const { newName } = req.body;
+    const id = req.params.id;
+    if (!newName) return res.status(400).json({ success: false, message: '新名称不能为空' });
+    try {
+        const item = db.prepare('SELECT * FROM file_nodes WHERE id = ?').get(Number(id));
+        if (!item) return res.status(404).json({ success: false, message: '文件不存在' });
+        if (!req.isAdmin) {
+            let canWrite = false;
+            if (item.isFolder) canWrite = (item.id === req.userRootId) || isUnderUserRoot(item.id, req.userRootId);
+            else canWrite = (item.parentId === req.userRootId) || isUnderUserRoot(item.parentId, req.userRootId);
+            if (!canWrite) return res.status(403).json({ success: false, message: '无权限修改' });
+        }
+        const existing = db.prepare('SELECT * FROM file_nodes WHERE parentId = ? AND name = ? AND id != ?').get(item.parentId, newName, Number(id));
+        if (existing) return res.status(400).json({ success: false, message: '同名文件已存在' });
+        db.prepare('UPDATE file_nodes SET name = ?, updatedAt = CURRENT_TIMESTAMP WHERE id = ?').run(newName, Number(id));
+        res.json({ success: true });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ success: false, message: '服务器错误' });
+    }
+});
+
+// 删除文件/文件夹（原子更新全局容量）
+router.delete('/api/file/:id', isLoggedIn, checkFilesUploadBan, checkFileAccess, async (req, res) => {
+    const id = req.params.id;
+    try {
+        const item = db.prepare('SELECT * FROM file_nodes WHERE id = ?').get(Number(id));
+        if (!item) return res.status(404).json({ success: false, message: '文件不存在' });
+        if (!req.isAdmin) {
+            let canWrite = false;
+            if (item.isFolder) canWrite = (item.id === req.userRootId) || isUnderUserRoot(item.id, req.userRootId);
+            else canWrite = (item.parentId === req.userRootId) || isUnderUserRoot(item.parentId, req.userRootId);
+            if (!canWrite) return res.status(403).json({ success: false, message: '无权限删除' });
+        }
+        
+        let deletedSize = 0;
+        if (!item.isFolder && item.fileUrl) {
+            const uploader = db.prepare('SELECT role FROM users WHERE userId = ?').get(item.uploaderId);
+            if (uploader && uploader.role === 'user') {
+                deletedSize = item.fileSize || 0;
+            }
+            const safeFilePath = safePath(UPLOAD_BASE, item.fileUrl);
+            try { await fs.unlink(safeFilePath); } catch (e) {}
+        }
+        
+        if (item.isFolder) {
+            const children = db.prepare('SELECT * FROM file_nodes WHERE parentId = ?').all(Number(id));
+            for (const child of children) {
+                if (!child.isFolder && child.fileUrl) {
+                    const childUploader = db.prepare('SELECT role FROM users WHERE userId = ?').get(child.uploaderId);
+                    if (childUploader && childUploader.role === 'user') {
+                        deletedSize += child.fileSize || 0;
+                    }
+                    const childSafePath = safePath(UPLOAD_BASE, child.fileUrl);
+                    try { await fs.unlink(childSafePath); } catch (e) {}
+                }
+            }
+            db.prepare('DELETE FROM file_nodes WHERE parentId = ?').run(Number(id));
+        }
+        
+        db.prepare('DELETE FROM file_nodes WHERE id = ?').run(Number(id));
+        
+        if (deletedSize > 0) {
+            updateGlobalUsedBytesAtomically(-deletedSize);
+        }
+        
+        res.json({ success: true });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ success: false, message: '服务器错误' });
+    }
+});
+
+// 下载/预览文件（路径沙箱 + 实时流量）
+router.get('/api/file/download/:id', isLoggedIn, checkFilesDownloadBan, checkFileAccess, async (req, res) => {
+    const id = req.params.id;
+    const isPreview = req.query.preview === 'true';
+    try {
+        const item = db.prepare('SELECT * FROM file_nodes WHERE id = ? AND isFolder = 0').get(Number(id));
+        if (!item) return res.status(404).json({ success: false, message: '文件不存在' });
+        
+        db.prepare('UPDATE file_nodes SET downloadCount = downloadCount + 1 WHERE id = ?').run(Number(id));
+        const safeFilePath = safePath(UPLOAD_BASE, item.fileUrl);
+        await fs.access(safeFilePath);
+        const user = db.prepare('SELECT username FROM users WHERE userId = ?').get(req.userId);
+        
+        const disposition = isPreview ? 'inline' : 'attachment';
+        let contentType = item.fileType || 'application/octet-stream';
+        if (contentType.startsWith('text/') || item.name.match(/\.(txt|md|js|css|html|json|xml)$/i)) {
+            contentType = 'text/plain; charset=utf-8';
+        }
+        res.setHeader('Content-Disposition', `${disposition}; filename*=UTF-8''${encodeURIComponent(item.originalName)}`);
+        res.setHeader('Content-Type', contentType);
+        
+        const readStream = fsSync.createReadStream(safeFilePath);
+        const passThrough = new PassThrough();
+        let bytesTransferred = 0, recorded = false;
+        passThrough.on('data', (chunk) => { bytesTransferred += chunk.length; });
+        const finishRecord = () => {
+            if (recorded) return;
+            recorded = true;
+            db.prepare(`INSERT INTO user_traffic (user_id, type, bytes, path) VALUES (?, 'download', ?, ?)`).run(req.userId, bytesTransferred, item.fileUrl);
+            logToFile(`[网盘下载] 用户 ${user.username} ${isPreview ? '预览' : '下载'}文件: ${item.name} (ID: ${id})，实际传输 ${bytesTransferred} / ${item.fileSize} bytes`);
+        };
+        passThrough.on('finish', finishRecord);
+        passThrough.on('error', finishRecord);
+        res.on('finish', finishRecord);
+        res.on('close', finishRecord);
+        readStream.pipe(passThrough).pipe(res);
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ success: false, message: '文件不存在或服务器错误' });
+    }
+});
+
+// 星标/取消星标
+router.post('/api/file/star/:id', isLoggedIn, checkFilesUploadBan, checkFileAccess, (req, res) => {
+    const id = req.params.id;
+    const { starred } = req.body;
+    try {
+        db.prepare('UPDATE file_nodes SET starred = ? WHERE id = ?').run(starred, Number(id));
+        res.json({ success: true });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ success: false, message: '服务器错误' });
+    }
+});
+
+// 批量删除（原子更新全局容量）
+router.post('/api/file/batch-delete', isLoggedIn, checkFilesUploadBan, checkFileAccess, async (req, res) => {
+    const { ids } = req.body;
+    if (!ids || !ids.length) return res.status(400).json({ success: false });
+    try {
+        let totalDeletedSize = 0;
+        for (const id of ids) {
+            const item = db.prepare('SELECT * FROM file_nodes WHERE id = ?').get(Number(id));
+            if (!item) continue;
+            if (!req.isAdmin) {
+                let canWrite = false;
+                if (item.isFolder) canWrite = (item.id === req.userRootId) || isUnderUserRoot(item.id, req.userRootId);
+                else canWrite = (item.parentId === req.userRootId) || isUnderUserRoot(item.parentId, req.userRootId);
+                if (!canWrite) return res.status(403).json({ success: false, message: '无权限删除某些文件' });
+            }
+            
+            if (!item.isFolder && item.fileUrl) {
+                const uploader = db.prepare('SELECT role FROM users WHERE userId = ?').get(item.uploaderId);
+                if (uploader && uploader.role === 'user') {
+                    totalDeletedSize += item.fileSize || 0;
+                }
+                const safeFilePath = safePath(UPLOAD_BASE, item.fileUrl);
+                try { await fs.unlink(safeFilePath); } catch (e) {}
+            }
+            
+            if (item.isFolder) {
+                const children = db.prepare('SELECT * FROM file_nodes WHERE parentId = ?').all(Number(id));
+                for (const child of children) {
+                    if (!child.isFolder && child.fileUrl) {
+                        const childUploader = db.prepare('SELECT role FROM users WHERE userId = ?').get(child.uploaderId);
+                        if (childUploader && childUploader.role === 'user') {
+                            totalDeletedSize += child.fileSize || 0;
+                        }
+                        const childSafePath = safePath(UPLOAD_BASE, child.fileUrl);
+                        try { await fs.unlink(childSafePath); } catch (e) {}
+                    }
+                }
+                db.prepare('DELETE FROM file_nodes WHERE parentId = ?').run(Number(id));
+            }
+            db.prepare('DELETE FROM file_nodes WHERE id = ?').run(Number(id));
+        }
+        
+        if (totalDeletedSize > 0) {
+            updateGlobalUsedBytesAtomically(-totalDeletedSize);
+        }
+        
+        res.json({ success: true });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ success: false, message: '服务器错误' });
+    }
+});
+
+// 批量移动
+router.post('/api/file/batch-move', isLoggedIn, checkFilesUploadBan, checkFileAccess, (req, res) => {
+    const { ids, targetParentId } = req.body;
+    if (!ids || !ids.length) return res.status(400).json({ success: false });
+    try {
+        for (const id of ids) {
+            const item = db.prepare('SELECT * FROM file_nodes WHERE id = ?').get(Number(id));
+            if (!item) continue;
+            if (!req.isAdmin) {
+                let canWrite = false;
+                if (item.isFolder) canWrite = (item.id === req.userRootId) || isUnderUserRoot(item.id, req.userRootId);
+                else canWrite = (item.parentId === req.userRootId) || isUnderUserRoot(item.parentId, req.userRootId);
+                if (!canWrite) return res.status(403).json({ success: false, message: '无权限移动某些文件' });
+            }
+            if (!req.isAdmin && targetParentId !== req.userRootId && !isUnderUserRoot(targetParentId, req.userRootId)) {
+                return res.status(403).json({ success: false, message: '目标目录无权限' });
+            }
+            db.prepare('UPDATE file_nodes SET parentId = ? WHERE id = ?').run(targetParentId, Number(id));
+        }
+        res.json({ success: true });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ success: false, message: '服务器错误' });
+    }
+});
+
+module.exports = router;

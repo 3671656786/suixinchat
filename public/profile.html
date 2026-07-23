@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes, viewport-fit=cover">
+    <title>个人信息 - 随心聊</title>
+    <link rel="stylesheet" href="style.css">
+    <style>
+        .profile-page { max-width: 500px; margin: 0 auto; padding: 1rem; }
+        .back-home { display: inline-block; margin-bottom: 1rem; background: #f0f0f0; padding: 8px 16px; border-radius: 40px; text-decoration: none; color: #333; font-size: 0.9rem; }
+        .profile-card { background: white; border-radius: 24px; padding: 24px; box-shadow: 0 4px 12px rgba(0,0,0,0.05); }
+        .avatar-preview { text-align: center; margin-bottom: 20px; }
+        .avatar-preview img { width: 100px; height: 100px; border-radius: 50%; object-fit: cover; }
+        .avatar-options { display: flex; gap: 12px; flex-wrap: wrap; justify-content: center; margin: 12px 0; }
+        .preset-avatar { width: 48px; height: 48px; border-radius: 50%; cursor: pointer; border: 2px solid transparent; }
+        .preset-avatar.selected { border-color: var(--primary); }
+        .online-sidebar { margin-top: 20px; background: white; border-radius: 16px; padding: 12px; }
+        .email-verify-group { display: flex; gap: 8px; margin-top: 8px; }
+        .email-verify-group input { flex: 1; }
+    </style>
+</head>
+<body>
+<div class="profile-page">
+    <a href="/" class="back-home">← 返回主界面</a>
+    <div class="profile-card">
+        <h2>👤 个人信息</h2>
+        <div class="avatar-preview">
+            <img id="currentAvatar" src="" alt="头像">
+            <div class="avatar-options" id="avatarSelectArea"></div>
+            <input type="file" id="avatarUpload" accept="image/*" style="margin-top:8px;">
+        </div>
+        <div class="input-group">
+            <label>用户名</label>
+            <input type="text" id="username" placeholder="用户名" autocomplete="username">
+        </div>
+        <div class="input-group">
+            <label>邮箱</label>
+            <input type="email" id="email" placeholder="邮箱" readonly disabled>
+            <button id="changeEmailBtn" class="btn-secondary" style="margin-top:8px;">📧 更换邮箱</button>
+        </div>
+        <div id="newEmailGroup" style="display:none; margin-top:12px;">
+            <div class="input-group">
+                <label>新邮箱</label>
+                <input type="email" id="newEmail" placeholder="新邮箱">
+                <div class="email-verify-group">
+                    <input type="text" id="emailVerifyCode" placeholder="验证码">
+                    <button type="button" id="sendEmailCodeBtn" class="btn-secondary">获取验证码</button>
+                </div>
+            </div>
+            <div class="modal-buttons" style="margin-top:8px;">
+                <button id="cancelChangeEmailBtn" class="btn-secondary">取消</button>
+                <button id="confirmChangeEmailBtn" class="btn-primary">确认更换</button>
+            </div>
+        </div>
+        <form id="passwordForm" onsubmit="return false;">
+            <input type="text" id="hiddenUsername" name="username" style="display:none;" autocomplete="username" value="">
+            <div class="input-group">
+                <label>旧密码</label>
+                <input type="password" id="oldPassword" placeholder="旧密码（修改密码时填写）" autocomplete="current-password">
+            </div>
+            <div class="input-group">
+                <label>新密码</label>
+                <input type="password" id="newPassword" placeholder="新密码" autocomplete="new-password">
+            </div>
+            <div class="input-group">
+                <label>确认新密码</label>
+                <input type="password" id="confirmPassword" placeholder="确认新密码" autocomplete="new-password">
+            </div>
+        </form>
+        <button id="saveProfileBtn" class="btn">保存修改</button>
+        <div id="profileMsg" class="error-msg"></div>
+    </div>
+    <div class="online-sidebar">
+        <h3>在线成员 (<span id="onlineCount">0</span>)</h3>
+        <div id="onlineList"></div>
+    </div>
+</div>
+<script src="/socket.io/socket.io.js"></script>
+<script src="profile.js"></script>
+<script src="common.js"></script>
+</body>
+</html>
