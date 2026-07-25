@@ -1,6 +1,18 @@
 // socket/privateHandler.js
 const db = require('../db/connection');
 
+// 检查私聊封禁
+function isChatBanned(userId) {
+    const now = new Date().toISOString();
+    const ban = db.prepare(`
+        SELECT * FROM user_bans 
+        WHERE user_id = ? AND (ban_type = ? OR ban_type = 'all')
+        AND (expires_at IS NULL OR expires_at > ?)
+        LIMIT 1
+    `).get(userId, 'chat', now);
+    return !!ban;
+}
+
 module.exports = (socket, io, onlineUsers, db) => {
     const userId = socket.user.userId;
     const user = socket.user;
@@ -10,7 +22,14 @@ module.exports = (socket, io, onlineUsers, db) => {
         socket.join(roomId);
     });
     
+    // #1-中 修复：私聊消息添加封禁检查
     socket.on('private message', async ({ toUserId, content }) => {
+        // 检查发送者是否被封禁聊天
+        if (isChatBanned(userId)) {
+            socket.emit('system message', '您已被限制使用聊天功能');
+            return;
+        }
+        
         const fromUser = db.prepare('SELECT userId FROM users WHERE userId = ?').get(userId);
         const toUser = db.prepare('SELECT userId FROM users WHERE userId = ?').get(toUserId);
         if (!fromUser || !toUser) {
@@ -37,7 +56,14 @@ module.exports = (socket, io, onlineUsers, db) => {
         }
     });
     
+    // #1-中 修复：私聊文件消息添加封禁检查
     socket.on('private file message', async ({ toUserId, fileUrl, fileName, fileType }) => {
+        // 检查发送者是否被封禁聊天
+        if (isChatBanned(userId)) {
+            socket.emit('system message', '您已被限制使用聊天功能');
+            return;
+        }
+        
         const fromUser = db.prepare('SELECT userId FROM users WHERE userId = ?').get(userId);
         const toUser = db.prepare('SELECT userId FROM users WHERE userId = ?').get(toUserId);
         if (!fromUser || !toUser) {

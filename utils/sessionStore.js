@@ -8,6 +8,8 @@ class SQLiteSessionStore extends session.Store {
         this.tableName = options.tableName || 'sessions';
         if (!this.db) throw new Error('需要传入 db 实例');
         this._init().catch(err => console.error('[sessionStore] 建表失败:', err.message));
+        // #1-低 修复：启动定期清理任务（每小时执行一次）
+        this._startCleanupTask();
     }
 
     async _init() {
@@ -15,6 +17,27 @@ class SQLiteSessionStore extends session.Store {
         this.db.exec(`CREATE TABLE IF NOT EXISTS ${this.tableName} (
             sid TEXT PRIMARY KEY, sess TEXT NOT NULL, expire DATETIME NOT NULL
         )`);
+        // 首次启动时清理过期会话
+        this._cleanExpired();
+    }
+
+    // #1-低 修复：清理过期会话
+    _cleanExpired() {
+        try {
+            const result = this.db.prepare(`DELETE FROM ${this.tableName} WHERE expire <= datetime('now')`).run();
+            if (result.changes > 0) {
+                console.log(`[sessionStore] 已清理 ${result.changes} 条过期会话`);
+            }
+        } catch (err) {
+            console.error('[sessionStore] 清理过期会话失败:', err.message);
+        }
+    }
+
+    _startCleanupTask() {
+        // 每小时清理一次
+        setInterval(() => {
+            this._cleanExpired();
+        }, 60 * 60 * 1000);
     }
 
     get(sid, cb) {

@@ -33,10 +33,20 @@ router.post('/api/admin/kick', isAdmin, (req, res) => {
     const info = onlineUsers.get(Number(userId));
     if (info) {
         const io = getIO();
-        io.emit('user kicked', { userId: Number(userId), username: targetUser.username });
+        // #19 修复：清理用户所在的所有私聊房间
         for (const socketId of info.sockets) {
             const targetSocket = io?.sockets.sockets.get(socketId);
-            if (targetSocket) targetSocket.disconnect(true);
+            if (targetSocket) {
+                // 获取该 socket 的所有房间
+                const rooms = Array.from(targetSocket.rooms || []);
+                for (const room of rooms) {
+                    // 退出所有私聊房间（格式：private:userId1-userId2）
+                    if (room.startsWith('private:')) {
+                        targetSocket.leave(room);
+                    }
+                }
+                targetSocket.disconnect(true);
+            }
         }
         onlineUsers.delete(Number(userId));
         broadcastOnlineUsers();
@@ -281,6 +291,11 @@ router.get('/api/admin/scan-files', isAdmin, async (req, res) => {
     for (const msg of messages) dbFilesMap.set(msg.fileUrl, { table: 'messages', id: msg.id });
     const users = db.prepare('SELECT userId, avatarUrl FROM users WHERE avatarUrl IS NOT NULL').all();
     for (const user of users) dbFilesMap.set(user.avatarUrl, { table: 'users', id: user.userId });
+    // #25 修复：添加云笔记附件到映射
+    const noteAttachments = db.prepare('SELECT id, fileUrl FROM note_attachments WHERE fileUrl IS NOT NULL').all();
+    for (const att of noteAttachments) {
+        dbFilesMap.set(att.fileUrl, { table: 'note_attachments', id: att.id });
+    }
     results.totalDb = dbFilesMap.size;
     for (const local of localFiles) {
         if (!dbFilesMap.has(local.relativePath)) {
@@ -332,6 +347,7 @@ router.post('/api/admin/delete-missing-record', isAdmin, async (req, res) => {
         if (table === 'file_nodes') db.prepare('DELETE FROM file_nodes WHERE id = ?').run(Number(id));
         else if (table === 'messages') db.prepare('DELETE FROM messages WHERE id = ?').run(Number(id));
         else if (table === 'users') db.prepare('UPDATE users SET avatarUrl = ? WHERE userId = ?').run(DEFAULT_AVATAR_URL, Number(id));
+        else if (table === 'note_attachments') db.prepare('DELETE FROM note_attachments WHERE id = ?').run(Number(id));
         else return res.status(400).json({ success: false, message: '不支持的表' });
         logToFile(`[清理] 已删除缺失文件记录: ${table} ID=${id}, 路径=${fileUrl}`);
         res.json({ success: true });

@@ -15,8 +15,41 @@ function getCurrentAgreementVersion() {
     return version ? version.version : 1;
 }
 
-// 验证码发送频率限制（内存存储，重启后重置）
-const verificationCooldowns = new Map();
+// #20 修复：验证码频率限制改用数据库存储（替代内存 Map）
+function getCooldown(key) {
+    const row = db.prepare('SELECT count, first_time, last_time FROM verification_cooldowns WHERE key = ?').get(key);
+    return row;
+}
+
+function updateCooldown(key, count, time) {
+    db.prepare(`
+        INSERT INTO verification_cooldowns (key, count, first_time, last_time) 
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(key) DO UPDATE SET 
+            count = excluded.count,
+            first_time = CASE WHEN excluded.first_time < first_time THEN excluded.first_time ELSE first_time END,
+            last_time = excluded.last_time
+    `).run(key, count, time, time);
+}
+
+function checkRateLimit(key, maxAttempts, windowMs) {
+    const now = Date.now();
+    const record = getCooldown(key);
+    if (!record) {
+        updateCooldown(key, 1, now);
+        return true;
+    }
+    // 重置窗口
+    if (now - record.first_time > windowMs) {
+        updateCooldown(key, 1, now);
+        return true;
+    }
+    if (record.count >= maxAttempts) {
+        return false;
+    }
+    updateCooldown(key, record.count + 1, now);
+    return true;
+}
 
 // 发送注册验证码（带频率限制）
 router.post('/api/send-verification-code', async (req, res) => {
@@ -25,17 +58,14 @@ router.post('/api/send-verification-code', async (req, res) => {
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     if (!emailRegex.test(email)) return res.status(400).json({ success: false, message: '邮箱格式不正确' });
     
-    // 频率限制：同一邮箱 60 秒内最多 1 次
-    const cooldownKey = `email:${email}`;
-    const lastSent = verificationCooldowns.get(cooldownKey);
-    if (lastSent && (Date.now() - lastSent) < 60000) {
+    // #20 修复：使用数据库限流
+    const emailKey = `email:${email}`;
+    if (!checkRateLimit(emailKey, 1, 60000)) {
         return res.status(429).json({ success: false, message: '验证码发送过于频繁，请 60 秒后再试' });
     }
-    // 同一 IP 60 秒内最多 1 次
     const ip = getClientIp(req);
     const ipKey = `ip:${ip}`;
-    const lastIpSent = verificationCooldowns.get(ipKey);
-    if (lastIpSent && (Date.now() - lastIpSent) < 60000) {
+    if (!checkRateLimit(ipKey, 1, 60000)) {
         return res.status(429).json({ success: false, message: '验证码发送过于频繁，请 60 秒后再试' });
     }
     
@@ -51,8 +81,6 @@ router.post('/api/send-verification-code', async (req, res) => {
         db.prepare('DELETE FROM email_verifications WHERE email = ?').run(email);
         db.prepare('INSERT INTO email_verifications (email, code, expires_at) VALUES (?, ?, ?)').run(email, code, expiresAt);
         await sendMail(email, '随心聊 - 验证码', `<p>您的验证码是：<strong>${code}</strong></p><p>10分钟内有效。</p>`);
-        verificationCooldowns.set(`email:${email}`, Date.now());
-        verificationCooldowns.set(`ip:${ip}`, Date.now());
         res.json({ success: true, message: '验证码已发送' });
     } catch (err) {
         console.error('发送验证码失败:', err);
@@ -74,19 +102,11 @@ router.post('/api/register', checkRegisterLimit, async (req, res) => {
     const blacklisted = db.prepare('SELECT * FROM email_blacklist WHERE email = ?').get(email);
     if (blacklisted) return res.json({ success: false, message: '该邮箱已被禁止注册' });
     
-    // 验证码尝试频率限制：同一邮箱每10秒最多3次验证
-    const attemptCooldownKey = `verify:${email}`;
-    const attemptData = verificationCooldowns.get(attemptCooldownKey) || { count: 0, time: Date.now() };
-    if (Date.now() - attemptData.time < 10000) {
-        if (attemptData.count >= 3) {
-            return res.json({ success: false, message: '验证码验证过于频繁，请10秒后再试' });
-        }
-        attemptData.count++;
-    } else {
-        attemptData.count = 1;
-        attemptData.time = Date.now();
+    // #20 修复：验证码验证频率限制使用数据库
+    const verifyKey = `verify:${email}`;
+    if (!checkRateLimit(verifyKey, 3, 10000)) {
+        return res.json({ success: false, message: '验证码验证过于频繁，请10秒后再试' });
     }
-    verificationCooldowns.set(attemptCooldownKey, attemptData);
     
     const now = new Date().toISOString();
     const record = db.prepare('SELECT * FROM email_verifications WHERE email = ? AND code = ? AND expires_at > ?').get(email, verificationCode, now);
@@ -98,7 +118,6 @@ router.post('/api/register', checkRegisterLimit, async (req, res) => {
     if (existingEmail) return res.json({ success: false, message: '邮箱已注册' });
     
     const avatar = avatarUrl || DEFAULT_AVATAR_URL;
-    // 验证头像 URL 安全：只允许 http/https 或 data: URI
     if (!avatar.match(/^(https?:\/\/|data:image\/)/i) && avatar !== DEFAULT_AVATAR_URL) {
         return res.json({ success: false, message: '头像URL格式无效，仅支持http/https或data:image' });
     }
@@ -168,6 +187,13 @@ router.post('/api/forgot-password/send-code', async (req, res) => {
     if (!email) return res.status(400).json({ success: false, message: '邮箱不能为空' });
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     if (!emailRegex.test(email)) return res.status(400).json({ success: false, message: '邮箱格式不正确' });
+    
+    // #20 修复：频率限制
+    const resetKey = `reset:${email}`;
+    if (!checkRateLimit(resetKey, 1, 60000)) {
+        return res.status(429).json({ success: false, message: '验证码发送过于频繁，请60秒后再试' });
+    }
+    
     const user = db.prepare('SELECT userId FROM users WHERE email = ?').get(email);
     if (!user) return res.status(404).json({ success: false, message: '该邮箱未注册' });
     const code = generateVerificationCode();
@@ -188,19 +214,13 @@ router.post('/api/reset-password', async (req, res) => {
     const { email, verificationCode, newPassword } = req.body;
     if (!email || !verificationCode || !newPassword) return res.status(400).json({ success: false, message: '请完整填写信息' });
     if (newPassword.length < 6) return res.status(400).json({ success: false, message: '密码长度至少6位' });
-    // 验证码尝试频率限制
-    const attemptKey = `reset:${email}`;
-    const attemptData = verificationCooldowns.get(attemptKey) || { count: 0, time: Date.now() };
-    if (Date.now() - attemptData.time < 10000) {
-        if (attemptData.count >= 3) {
-            return res.status(429).json({ success: false, message: '验证过于频繁，请10秒后再试' });
-        }
-        attemptData.count++;
-    } else {
-        attemptData.count = 1;
-        attemptData.time = Date.now();
+    
+    // #20 修复：验证码验证频率限制
+    const verifyKey = `reset_verify:${email}`;
+    if (!checkRateLimit(verifyKey, 3, 10000)) {
+        return res.status(429).json({ success: false, message: '验证过于频繁，请10秒后再试' });
     }
-    verificationCooldowns.set(attemptKey, attemptData);
+    
     const now = new Date().toISOString();
     const record = db.prepare('SELECT * FROM email_verifications WHERE email = ? AND code = ? AND expires_at > ?').get(email, verificationCode, now);
     if (!record) return res.status(400).json({ success: false, message: '验证码无效或已过期' });
@@ -217,6 +237,12 @@ router.post('/api/send-change-email-code', isLoggedIn, async (req, res) => {
     if (!newEmail) return res.status(400).json({ success: false, message: '新邮箱不能为空' });
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     if (!emailRegex.test(newEmail)) return res.status(400).json({ success: false, message: '邮箱格式不正确' });
+    
+    // #20 修复：频率限制
+    const changeKey = `change_email:${userId}`;
+    if (!checkRateLimit(changeKey, 1, 60000)) {
+        return res.status(429).json({ success: false, message: '验证码发送过于频繁，请60秒后再试' });
+    }
     
     const existingUser = db.prepare('SELECT userId FROM users WHERE email = ?').get(newEmail);
     if (existingUser && existingUser.userId !== userId) return res.status(400).json({ success: false, message: '该邮箱已被其他用户使用' });
@@ -245,19 +271,11 @@ router.post('/api/change-email', isLoggedIn, async (req, res) => {
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     if (!emailRegex.test(newEmail)) return res.status(400).json({ success: false, message: '邮箱格式不正确' });
     
-    // 验证码验证频率限制
-    const changeAttemptKey = `change_email:${userId}`;
-    const changeAttempt = verificationCooldowns.get(changeAttemptKey) || { count: 0, time: Date.now() };
-    if (Date.now() - changeAttempt.time < 10000) {
-        if (changeAttempt.count >= 3) {
-            return res.status(429).json({ success: false, message: '验证过于频繁，请10秒后再试' });
-        }
-        changeAttempt.count++;
-    } else {
-        changeAttempt.count = 1;
-        changeAttempt.time = Date.now();
+    // #20 修复：验证码验证频率限制
+    const verifyKey = `change_verify:${userId}`;
+    if (!checkRateLimit(verifyKey, 3, 10000)) {
+        return res.status(429).json({ success: false, message: '验证过于频繁，请10秒后再试' });
     }
-    verificationCooldowns.set(changeAttemptKey, changeAttempt);
     
     const now = new Date().toISOString();
     const record = db.prepare('SELECT * FROM email_verifications WHERE email = ? AND code = ? AND expires_at > ?').get(newEmail, verificationCode, now);

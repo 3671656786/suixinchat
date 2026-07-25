@@ -3,6 +3,7 @@ const express = require('express');
 const router = express.Router();
 const db = require('../db/connection');
 const { isLoggedIn } = require('../middleware/auth');
+const { getIO, onlineUsers } = require('../socket');
 
 // 获取我的群列表
 router.get('/api/groups', isLoggedIn, (req, res) => {
@@ -39,7 +40,7 @@ router.get('/api/groups/discover', isLoggedIn, (req, res) => {
     }
 });
 
-// 创建群
+// 创建群 - #18 修复：自动加入 Socket 房间
 router.post('/api/groups', isLoggedIn, (req, res) => {
     const { name, description } = req.body;
     if (!name || name.trim().length < 1 || name.trim().length > 20) {
@@ -47,9 +48,22 @@ router.post('/api/groups', isLoggedIn, (req, res) => {
     }
     try {
         const result = db.prepare('INSERT INTO chat_groups (name, description, ownerId) VALUES (?, ?, ?)').run(name.trim(), (description || '').trim(), req.userId);
-        const groupId = result.lastInsertRowid;
+        const groupId = result.lastInsertrowid;
         db.prepare('INSERT INTO group_members (groupId, userId, role) VALUES (?, ?, ?)').run(groupId, req.userId, 'owner');
         const group = db.prepare('SELECT * FROM chat_groups WHERE id = ?').get(groupId);
+        
+        // #18 修复：自动让创建者加入 Socket 房间
+        const io = getIO();
+        if (io) {
+            const userSockets = onlineUsers.get(req.userId)?.sockets || [];
+            for (const socketId of userSockets) {
+                const socket = io.sockets.sockets.get(socketId);
+                if (socket) {
+                    socket.join(`group:${groupId}`);
+                }
+            }
+        }
+        
         res.json({ success: true, group: { ...group, myRole: 'owner', memberCount: 1 } });
     } catch (err) {
         console.error(err);
@@ -66,6 +80,19 @@ router.post('/api/groups/:id/join', isLoggedIn, (req, res) => {
         const already = db.prepare('SELECT * FROM group_members WHERE groupId = ? AND userId = ?').get(groupId, req.userId);
         if (already) return res.json({ success: false, message: '已在群中' });
         db.prepare('INSERT INTO group_members (groupId, userId, role) VALUES (?, ?, ?)').run(groupId, req.userId, 'member');
+        
+        // 加入 Socket 房间
+        const io = getIO();
+        if (io) {
+            const userSockets = onlineUsers.get(req.userId)?.sockets || [];
+            for (const socketId of userSockets) {
+                const socket = io.sockets.sockets.get(socketId);
+                if (socket) {
+                    socket.join(`group:${groupId}`);
+                }
+            }
+        }
+        
         res.json({ success: true, message: '已加入群' });
     } catch (err) {
         console.error(err);
@@ -81,6 +108,19 @@ router.post('/api/groups/:id/leave', isLoggedIn, (req, res) => {
         if (!member) return res.json({ success: false, message: '您不在该群中' });
         if (member.role === 'owner') return res.json({ success: false, message: '群主不能退出，请先转让群主' });
         db.prepare('DELETE FROM group_members WHERE groupId = ? AND userId = ?').run(groupId, req.userId);
+        
+        // 退出 Socket 房间
+        const io = getIO();
+        if (io) {
+            const userSockets = onlineUsers.get(req.userId)?.sockets || [];
+            for (const socketId of userSockets) {
+                const socket = io.sockets.sockets.get(socketId);
+                if (socket) {
+                    socket.leave(`group:${groupId}`);
+                }
+            }
+        }
+        
         res.json({ success: true, message: '已退出群' });
     } catch (err) {
         console.error(err);
@@ -136,6 +176,19 @@ router.post('/api/groups/:id/kick', isLoggedIn, (req, res) => {
         if (target.role === 'owner') return res.json({ success: false, message: '不能踢出群主' });
         if (me.role === 'admin' && target.role === 'admin') return res.json({ success: false, message: '管理员不能互踢' });
         db.prepare('DELETE FROM group_members WHERE groupId = ? AND userId = ?').run(groupId, targetUserId);
+        
+        // 被踢用户退出 Socket 房间
+        const io = getIO();
+        if (io) {
+            const targetSockets = onlineUsers.get(targetUserId)?.sockets || [];
+            for (const socketId of targetSockets) {
+                const socket = io.sockets.sockets.get(socketId);
+                if (socket) {
+                    socket.leave(`group:${groupId}`);
+                }
+            }
+        }
+        
         res.json({ success: true, message: '已踢出' });
     } catch (err) {
         console.error(err);
@@ -149,6 +202,23 @@ router.delete('/api/groups/:id', isLoggedIn, (req, res) => {
     try {
         const me = db.prepare('SELECT * FROM group_members WHERE groupId = ? AND userId = ?').get(groupId, req.userId);
         if (!me || me.role !== 'owner') return res.json({ success: false, message: '仅群主可解散群' });
+        
+        // 获取所有成员，通知他们退出房间
+        const members = db.prepare('SELECT userId FROM group_members WHERE groupId = ?').all(groupId);
+        const io = getIO();
+        if (io) {
+            for (const m of members) {
+                const sockets = onlineUsers.get(m.userId)?.sockets || [];
+                for (const socketId of sockets) {
+                    const socket = io.sockets.sockets.get(socketId);
+                    if (socket) {
+                        socket.leave(`group:${groupId}`);
+                        socket.emit('system message', '您所在的群已被群主解散');
+                    }
+                }
+            }
+        }
+        
         db.prepare('DELETE FROM messages WHERE groupId = ?').run(groupId);
         db.prepare('DELETE FROM group_members WHERE groupId = ?').run(groupId);
         db.prepare('DELETE FROM chat_groups WHERE id = ?').run(groupId);

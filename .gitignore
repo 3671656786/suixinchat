@@ -36,3 +36,6 @@ Thumbs.db
 
 # PM2 日志
 .pm2/
+
+
+cmd.bat

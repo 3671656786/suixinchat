@@ -7,6 +7,8 @@ const MAGIC_SIGNATURES = {
     'image/gif': [['47494638', 0]],
     'image/webp': [['52494646', 0]],
     'image/svg+xml': [['3C737667', 0], ['3C3F786D', 0]],
+    'image/bmp': [['424D', 0]],  // #2-低 修复：添加 BMP
+    'image/tiff': [['49492A00', 0], ['4D4D002A', 0]],  // #2-低 修复：添加 TIFF
     'video/mp4': [['66747970', 4]],
     'video/quicktime': [['66747970', 4]],
     'video/x-msvideo': [['52494646', 0]],
@@ -19,6 +21,10 @@ const MAGIC_SIGNATURES = {
     'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': [['504B0304', 0]],
     'application/vnd.ms-powerpoint': [['504B0304', 0]],
     'application/vnd.openxmlformats-officedocument.presentationml.presentation': [['504B0304', 0]],
+    // #2-低 修复：添加 ODT/ODS/ODP
+    'application/vnd.oasis.opendocument.text': [['504B0304', 0]],
+    'application/vnd.oasis.opendocument.spreadsheet': [['504B0304', 0]],
+    'application/vnd.oasis.opendocument.presentation': [['504B0304', 0]],
     'text/plain': [],
     'text/csv': [],
     'application/zip': [['504B0304', 0]],
@@ -49,6 +55,11 @@ function validateFileType(filePath, declaredMime) {
     const hex = readFileHexSignature(filePath, 12);
     if (!hex) return { valid: false, detectedType: null, reason: '无法读取文件' };
 
+    // #23 修复：检测 UTF-16 文本文件
+    if (hex.startsWith('FFFE') || hex.startsWith('FEFF')) {
+        return { valid: true, detectedType: 'text/plain; charset=utf-16' };
+    }
+
     if (declaredMime === 'text/plain' || declaredMime === 'text/csv' ||
         declaredMime === 'application/json' || declaredMime === 'application/xml') {
         try {
@@ -56,10 +67,13 @@ function validateFileType(filePath, declaredMime) {
             const buffer = Buffer.alloc(512);
             const bytesRead = fs.readSync(fd, buffer, 0, 512, 0);
             fs.closeSync(fd);
+            // 允许少量 NULL 字节（UTF-16 等），但超过 5% 则拒绝
+            let nullCount = 0;
             for (let i = 0; i < bytesRead; i++) {
-                if (buffer[i] === 0 && !declaredMime.startsWith('application/')) {
-                    return { valid: false, detectedType: 'binary', reason: '文件包含NULL字节，不是纯文本' };
-                }
+                if (buffer[i] === 0) nullCount++;
+            }
+            if (nullCount > bytesRead * 0.05 && !declaredMime.startsWith('application/')) {
+                return { valid: false, detectedType: 'binary', reason: '文件包含过多NULL字节，可能不是纯文本' };
             }
         } catch (e) {}
         return { valid: true, detectedType: declaredMime };
@@ -86,7 +100,10 @@ function validateFileType(filePath, declaredMime) {
     if (declaredMime.startsWith('application/vnd.openxmlformats') || 
         declaredMime === 'application/msword' ||
         declaredMime === 'application/vnd.ms-excel' ||
-        declaredMime === 'application/vnd.ms-powerpoint') {
+        declaredMime === 'application/vnd.ms-powerpoint' ||
+        declaredMime === 'application/vnd.oasis.opendocument.text' ||
+        declaredMime === 'application/vnd.oasis.opendocument.spreadsheet' ||
+        declaredMime === 'application/vnd.oasis.opendocument.presentation') {
         if (!hex.startsWith('504B0304')) {
             return { valid: false, detectedType: null, reason: 'Office文档应为ZIP格式，但文件头不匹配' };
         }

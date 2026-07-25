@@ -23,10 +23,17 @@ module.exports = {
     HEARTBEAT_INTERVAL: parseInt(process.env.HEARTBEAT_INTERVAL) || 30000,
     HEARTBEAT_TIMEOUT: parseInt(process.env.HEARTBEAT_TIMEOUT) || 40000,
     
-    // 文件大小限制
+    // 文件大小限制（默认值，实际从数据库读取）
+    // 运行时通过 getFileSizeLimit() 获取
     FILE_SIZE_LIMITS: {
         user: 50 * 1024 * 1024,   // 50MB
         admin: 1024 * 1024 * 1024  // 1GB
+    },
+    
+    // 默认容量配置
+    DEFAULT_CAPACITY: {
+        user: 100 * 1024 * 1024,      // 100MB
+        global: 10 * 1024 * 1024 * 1024 // 10GB
     },
     
     // 文件类型白名单（MIME 类型）

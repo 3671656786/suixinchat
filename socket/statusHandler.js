@@ -8,8 +8,13 @@ function saveUserDuration(userId, currentTime, onlineUsers) {
     const end = currentTime;
     const duration = Math.floor((end - start) / 1000);
     if (duration > 0) {
-        db.prepare(`INSERT INTO user_sessions (userId, loginTime, logoutTime, duration) VALUES (?, ?, ?, ?)`)
-            .run(userId, start.toISOString(), end.toISOString(), duration);
+        // #5-低 修复：添加错误处理
+        try {
+            db.prepare(`INSERT INTO user_sessions (userId, loginTime, logoutTime, duration) VALUES (?, ?, ?, ?)`)
+                .run(userId, start.toISOString(), end.toISOString(), duration);
+        } catch (err) {
+            console.error('[statusHandler] 保存用户时长失败:', err.message);
+        }
     }
     info.lastSaveTime = currentTime;
     onlineUsers.set(userId, info);

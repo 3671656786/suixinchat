@@ -52,8 +52,13 @@ function generateVerificationCode() {
     return Math.floor(100000 + Math.random() * 900000).toString();
 }
 
+// #3-低 修复：正确处理代理链
 function getClientIp(req) {
-    return req.headers['x-forwarded-for'] || req.socket.remoteAddress;
+    const forwarded = req.headers['x-forwarded-for'];
+    if (forwarded) {
+        return forwarded.split(',')[0].trim();
+    }
+    return req.socket?.remoteAddress || req.connection?.remoteAddress || 'unknown';
 }
 
 function isValidMessageLength(content) {

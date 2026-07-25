@@ -1,3 +1,4 @@
+// public/profile.js
 let currentUser = null, socket = null, changeEmailMode = false;
 const DEFAULT_AVATAR_URL = 'https://api.dicebear.com/7.x/avataaars/svg?seed=default';
 const avatarPresets = [
@@ -8,21 +9,7 @@ const avatarPresets = [
 ];
 let selectedAvatar = '';
 
-function escapeHtml(text) {
-    if (!text) return '';
-    var e = {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'};
-    return text.replace(/[&<>"']/g, function(m) { return e[m]; });
-}
-
-async function apiRequest(url, method, body) {
-    const res = await fetch(url, {
-        method,
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: body ? JSON.stringify(body) : undefined
-    });
-    return res.json();
-}
+// 使用 common.js 中的全局函数 window.escapeHtml、window.apiRequest
 
 function renderAvatarOptions(selectedUrl) {
     const container = document.getElementById('avatarSelectArea');
@@ -179,7 +166,7 @@ document.getElementById('saveProfileBtn').addEventListener('click', async () => 
             msgDiv.innerText = '两次输入的新密码不一致';
             return;
         }
-        const pwdRes = await apiRequest('/api/changePassword', 'POST', { oldPassword, newPassword });
+        const pwdRes = await window.apiRequest('/api/changePassword', 'POST', { oldPassword, newPassword });
         if (!pwdRes.success) {
             msgDiv.innerText = pwdRes.message;
             return;
@@ -192,7 +179,7 @@ document.getElementById('saveProfileBtn').addEventListener('click', async () => 
     }
     
     if (username !== currentUser.username) {
-        const updateRes = await apiRequest('/api/updateProfile', 'POST', { username });
+        const updateRes = await window.apiRequest('/api/updateProfile', 'POST', { username });
         if (updateRes.success) {
             currentUser = updateRes.user;
             document.getElementById('username').value = currentUser.username;
@@ -222,7 +209,7 @@ function initSocket() {
             div.className = 'online-user';
             const statusIcon = u.status === 'chat' ? '💬' : (u.status === 'files' ? '📁' : '📝');
             const av = u.avatarUrl || DEFAULT_AVATAR_URL;
-            div.innerHTML = `<img src="${escapeHtml(av)}"><span>${escapeHtml(u.username)} ${statusIcon}</span>`;
+            div.innerHTML = `<img src="${window.escapeHtml(av)}"><span>${window.escapeHtml(u.username)} ${statusIcon}</span>`;
             container.appendChild(div);
         });
     });

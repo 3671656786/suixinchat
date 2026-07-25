@@ -19,6 +19,8 @@
         .ban-btn { background: #ff9800; color: white; border: none; padding: 4px 12px; border-radius: 20px; cursor: pointer; margin-left: 8px; }
         .stats-table { width: 100%; border-collapse: collapse; }
         .stats-table th, .stats-table td { padding: 8px; text-align: left; border-bottom: 1px solid #eee; }
+        .stats-table tr:hover { background: #f5f5f5; }
+        .stats-table tr[style*="cursor:pointer"]:hover { background: #e8f5e9; }
         pre { background: #f5f5f5; padding: 12px; border-radius: 8px; overflow-x: auto; max-height: 400px; }
         .restart-btn { background: #ff9800; color: white; margin-left: 12px; }
         .tool-btn { background: #2196f3; color: white; border: none; padding: 8px 16px; border-radius: 40px; cursor: pointer; margin-right: 12px; }
@@ -33,7 +35,14 @@
         .modal-content { background: white; border-radius: 24px; padding: 20px; width: 450px; max-width: 90%; max-height: 80vh; overflow-y: auto; }
         .modal-buttons { display: flex; justify-content: flex-end; gap: 12px; margin-top: 16px; }
         .remove-ban-btn { background: var(--danger); color: white; border: none; padding: 2px 8px; border-radius: 12px; cursor: pointer; margin-left: 8px; }
-        @media (max-width: 768px) { .admin-tabs { justify-content: center; } .user-item, .message-item { flex-direction: column; align-items: flex-start; gap: 8px; } .modal-content { width: 95%; } }
+        .capacity-card { background: #f9f9f9; padding: 16px; border-radius: 16px; margin-bottom: 20px; }
+        .capacity-bar { background: #e0e0e0; border-radius: 8px; height: 8px; margin-top: 8px; overflow: hidden; }
+        .capacity-bar-fill { height: 100%; border-radius: 8px; transition: width 0.3s; }
+        @media (max-width: 768px) { 
+            .admin-tabs { justify-content: center; } 
+            .user-item, .message-item { flex-direction: column; align-items: flex-start; gap: 8px; } 
+            .modal-content { width: 95%; } 
+        }
     </style>
 </head>
 <body>
@@ -57,6 +66,7 @@
             <button class="tab-btn" data-tab="logs">📋 服务器日志</button>
             <button class="tab-btn" data-tab="stats">📊 在线统计</button>
             <button class="tab-btn" data-tab="report">📧 数据报表</button>
+            <button class="tab-btn" data-tab="capacity">📦 容量管理</button>
         </div>
 
         <div id="usersTab" class="admin-tab active">
@@ -100,6 +110,41 @@
             <div id="reportPreview" style="margin-top: 20px; border-top: 1px solid #eee; padding-top: 16px;"><h4>📋 数据预览</h4><div id="previewContent" class="preview-content"></div></div>
             <p style="color:#999; font-size:12px; margin-top:12px;">提示：Cron 表达式格式为“分 时 日 月 周”，例如“0 9 * * *”表示每天9:00。</p>
         </div>
+        <!-- 容量管理标签页 -->
+        <div id="capacityTab" class="admin-tab">
+            <h3>📦 容量管理</h3>
+            
+            <!-- 全局容量 -->
+            <div class="capacity-card">
+                <h4>🌍 全局容量（所有普通用户总和）</h4>
+                <div id="globalCapacityInfo" style="margin-bottom:12px;">加载中...</div>
+                <div style="display:flex; gap:12px; align-items:center; flex-wrap:wrap;">
+                    <label>修改全局容量：</label>
+                    <input type="number" id="globalCapacityInput" placeholder="GB" style="width:120px; padding:8px; border-radius:20px; border:1px solid #ddd;">
+                    <span>GB</span>
+                    <button id="updateGlobalCapacityBtn" class="btn-primary">更新</button>
+                </div>
+            </div>
+            
+            <!-- 单文件大小限制 -->
+            <div class="capacity-card">
+                <h4>📄 单文件大小限制</h4>
+                <div id="fileSizeLimitInfo" style="margin-bottom:12px;">加载中...</div>
+                <div style="display:flex; gap:12px; align-items:center; flex-wrap:wrap;">
+                    <label>修改限制：</label>
+                    <input type="number" id="fileSizeLimitInput" placeholder="MB" style="width:120px; padding:8px; border-radius:20px; border:1px solid #ddd;">
+                    <span>MB</span>
+                    <button id="updateFileSizeLimitBtn" class="btn-primary">更新</button>
+                </div>
+            </div>
+            
+            <!-- 用户容量列表 -->
+            <div class="capacity-card">
+                <h4>👥 用户容量管理</h4>
+                <p style="color:#999; font-size:13px; margin-bottom:12px;">点击用户行可修改其个人容量</p>
+                <div id="userCapacityList" style="max-height:400px; overflow-y:auto;">加载中...</div>
+            </div>
+        </div>
     </div>
 </div>
 
@@ -109,8 +154,28 @@
 
 <div id="agreementManageModal" class="modal" style="display:none;"><div class="modal-content" style="width: 700px;"><h3>📜 用户协议管理</h3><textarea id="agreementEditContent" rows="12" style="width:100%; padding:8px; border-radius:12px; border:1px solid #ddd; font-family: monospace;"></textarea><div class="modal-buttons"><button id="cancelAgreementBtn">取消</button><button id="saveAgreementBtn" class="btn-primary">保存协议</button></div><div id="agreementMsg" style="margin-top:8px;"></div></div></div>
 
+<!-- 修改用户容量模态框 -->
+<div id="userCapacityModal" class="modal" style="display:none;">
+    <div class="modal-content">
+        <h3>📁 修改用户容量</h3>
+        <div id="capacityUserInfo" style="margin-bottom:12px;"></div>
+        <div class="input-group">
+            <label>容量上限</label>
+            <div style="display:flex; gap:12px; align-items:center;">
+                <input type="number" id="userCapacityInput" placeholder="MB" style="flex:1; padding:8px; border-radius:20px; border:1px solid #ddd;">
+                <span>MB</span>
+            </div>
+            <p style="font-size:12px; color:#999; margin-top:4px;">留空或输入0可恢复默认 100MB</p>
+        </div>
+        <div class="modal-buttons">
+            <button id="cancelCapacityBtn">取消</button>
+            <button id="saveCapacityBtn" class="btn-primary">保存</button>
+        </div>
+    </div>
+</div>
+
 <script src="/socket.io/socket.io.js"></script>
-<script src="admin.js"></script>
 <script src="common.js"></script>
+<script src="admin.js"></script>
 </body>
 </html>

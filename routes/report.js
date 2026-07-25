@@ -176,12 +176,20 @@ router.post('/api/admin/report/preview', isAdmin, async (req, res) => {
     }
 });
 
-// 初始化定时任务
-function initReportSchedule() {
+// #4-低 修复：导出取消定时任务函数
+function cancelReportSchedule() {
     if (scheduledJob) {
         scheduledJob.cancel();
         scheduledJob = null;
+        console.log('📊 定时报表已取消');
     }
+}
+
+// 初始化定时任务
+function initReportSchedule() {
+    // 先取消现有任务
+    cancelReportSchedule();
+    
     try {
         const config = db.prepare('SELECT * FROM report_config WHERE id = 1').get();
         if (!config || !config.enabled) return;
@@ -207,4 +215,4 @@ function initReportSchedule() {
     }
 }
 
-module.exports = { router, initReportSchedule };
+module.exports = { router, initReportSchedule, cancelReportSchedule };

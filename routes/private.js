@@ -8,6 +8,7 @@ const { validateFileType } = require('../utils/fileValidator');
 const { logToFile } = require('../utils/logger');
 const { storage, fileFilter } = require('../config/multer');
 const { FILE_SIZE_LIMITS } = require('../config');
+const { safePath } = require('../utils/safePath');
 
 const fs = require('fs');
 const path = require('path');
@@ -40,7 +41,7 @@ router.post('/api/private/upload', isLoggedIn, (req, res, next) => {
     res.json({ success: true, fileUrl: `/uploads/private_files/${req.file.filename}`, fileName: req.file.originalname, fileType: req.file.mimetype });
 });
 
-// 私聊文件下载（记录下载流量）
+// #4-中 修复：私聊文件下载使用 safePath
 router.get('/api/private/download/:id', isLoggedIn, async (req, res) => {
     const msgId = req.params.id;
     const userId = req.userId;
@@ -48,19 +49,26 @@ router.get('/api/private/download/:id', isLoggedIn, async (req, res) => {
     if (!msg || !msg.fileUrl) {
         return res.status(404).json({ success: false, message: '文件不存在或无权访问' });
     }
-    const filePath = path.join(__dirname, '../', msg.fileUrl);
+    // #4-中 修复：使用 safePath 验证路径安全性
+    let safeFilePath;
     try {
-        await fs.promises.access(filePath);
+        const uploadBase = path.join(__dirname, '..');
+        safeFilePath = safePath(uploadBase, msg.fileUrl);
+    } catch (err) {
+        return res.status(403).json({ success: false, message: '路径非法' });
+    }
+    try {
+        await fs.promises.access(safeFilePath);
         let fileSize = msg.fileSize;
         if (!fileSize) {
-            const stat = await fs.promises.stat(filePath);
+            const stat = await fs.promises.stat(safeFilePath);
             fileSize = stat.size;
         }
         db.prepare(`INSERT INTO user_traffic (user_id, type, bytes, path) VALUES (?, 'download', ?, ?)`).run(userId, fileSize, msg.fileUrl);
         
         res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(msg.fileName || 'file')}`);
         res.setHeader('Content-Type', 'application/octet-stream');
-        const readStream = fs.createReadStream(filePath);
+        const readStream = fs.createReadStream(safeFilePath);
         readStream.pipe(res);
     } catch (err) {
         console.error('私聊文件下载失败:', err);

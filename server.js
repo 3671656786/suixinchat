@@ -21,7 +21,6 @@ process.on('unhandledRejection', (reason) => console.error('⚠️ unhandledReje
 process.on('uncaughtException', (err) => console.error('⚠️ uncaughtException:', err.message));
 
 // 优雅关闭：保存数据库后退出
-const db = {};
 async function gracefulShutdown(signal) {
     console.log(`\n⚠️ 收到 ${signal}，正在关闭服务...`);
     try {
@@ -46,7 +45,8 @@ process.on('message', (msg) => {
 const logDir = path.join(__dirname, 'logs');
 if (!fs.existsSync(logDir)) fs.mkdirSync(logDir, { recursive: true });
 
-// ========== Session 中间件（提前挂载，store 后续升级） ==========
+// ========== Session 中间件 ==========
+// #17 修复：先使用 MemoryStore，后续升级为 SQLite
 const memoryStore = new session.MemoryStore();
 const sessionMiddleware = session({
     secret: SESSION_SECRET,
@@ -121,12 +121,8 @@ const { initSocket } = require('./socket');
     if (process.env.USE_SQLITE_SESSION === 'true') {
         const SQLiteSessionStore = require('./utils/sessionStore');
         const sqliteStore = new SQLiteSessionStore({ db });
-        memoryStore.get = sqliteStore.get.bind(sqliteStore);
-        memoryStore.set = sqliteStore.set.bind(sqliteStore);
-        memoryStore.destroy = sqliteStore.destroy.bind(sqliteStore);
-        memoryStore.touch = sqliteStore.touch.bind(sqliteStore);
-        memoryStore.length = sqliteStore.length.bind(sqliteStore);
-        memoryStore.clear = sqliteStore.clear.bind(sqliteStore);
+        // #17 修复：直接替换 store，而非覆盖方法
+        sessionMiddleware.store = sqliteStore;
         console.log('✅ 使用 SQLite Session 存储');
     }
 
