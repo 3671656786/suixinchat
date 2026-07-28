@@ -1,223 +1,304 @@
 // public/profile.js
-let currentUser = null, socket = null, changeEmailMode = false;
-const DEFAULT_AVATAR_URL = 'https://api.dicebear.com/7.x/avataaars/svg?seed=default';
-const avatarPresets = [
+(function ensureGlobals() {
+    if (typeof window.escapeHtml !== 'function') {
+        window.escapeHtml = function(text) {
+            if (!text) return '';
+            var e = {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'};
+            return text.replace(/[&<>"']/g, function(m) { return e[m]; });
+        };
+    }
+    if (typeof window.apiRequest !== 'function') {
+        window.apiRequest = function(url, method, body) {
+            var isFormData = typeof FormData !== 'undefined' && body instanceof FormData;
+            var options = {
+                method: method,
+                credentials: 'include'
+            };
+            if (isFormData) {
+                options.body = body;
+            } else {
+                options.headers = { 'Content-Type': 'application/json' };
+                options.body = body ? JSON.stringify(body) : undefined;
+            }
+            return fetch(url, options).then(function(res) { return res.json(); });
+        };
+    }
+    if (typeof window.formatFileSize !== 'function') {
+        window.formatFileSize = function(bytes) {
+            if (!bytes) return '0 B';
+            var k = 1024;
+            var sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+            var i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+        };
+    }
+})();
+
+// ========== 状态 ==========
+var currentUser = null;
+var socket = null;
+var changeEmailMode = false;
+var DEFAULT_AVATAR_URL = 'https://api.dicebear.com/7.x/avataaars/svg?seed=default';
+var avatarPresets = [
     'https://api.dicebear.com/7.x/avataaars/svg?seed=Felix',
     'https://api.dicebear.com/7.x/avataaars/svg?seed=Aneka',
     'https://api.dicebear.com/7.x/avataaars/svg?seed=Leo',
     'https://api.dicebear.com/7.x/avataaars/svg?seed=Mia'
 ];
-let selectedAvatar = '';
+var selectedAvatar = '';
 
-// 使用 common.js 中的全局函数 window.escapeHtml、window.apiRequest
+// ========== DOM 引用 ==========
+var usernameInput = document.getElementById('username');
+var emailInput = document.getElementById('email');
+var oldPasswordInput = document.getElementById('oldPassword');
+var newPasswordInput = document.getElementById('newPassword');
+var confirmPasswordInput = document.getElementById('confirmPassword');
+var currentAvatarImg = document.getElementById('currentAvatar');
+var avatarSelectArea = document.getElementById('avatarSelectArea');
+var avatarUpload = document.getElementById('avatarUpload');
+var saveProfileBtn = document.getElementById('saveProfileBtn');
+var profileMsg = document.getElementById('profileMsg');
+var changeEmailBtn = document.getElementById('changeEmailBtn');
+var newEmailGroup = document.getElementById('newEmailGroup');
+var newEmailInput = document.getElementById('newEmail');
+var emailVerifyCodeInput = document.getElementById('emailVerifyCode');
+var sendEmailCodeBtn = document.getElementById('sendEmailCodeBtn');
+var cancelChangeEmailBtn = document.getElementById('cancelChangeEmailBtn');
+var confirmChangeEmailBtn = document.getElementById('confirmChangeEmailBtn');
+var receiveEmailCheckbox = document.getElementById('receiveEmailAnnouncements');
 
+// ========== 头像选项渲染 ==========
 function renderAvatarOptions(selectedUrl) {
-    const container = document.getElementById('avatarSelectArea');
+    var container = avatarSelectArea;
     container.innerHTML = '';
-    avatarPresets.forEach(url => {
-        const img = document.createElement('img');
+    for (var i = 0; i < avatarPresets.length; i++) {
+        var url = avatarPresets[i];
+        var img = document.createElement('img');
         img.src = url;
         img.className = 'preset-avatar';
         if (url === selectedUrl) img.classList.add('selected');
-        img.addEventListener('click', () => {
-            selectedAvatar = url;
+        img.addEventListener('click', function() {
+            selectedAvatar = this.src;
             renderAvatarOptions(selectedAvatar);
-            document.getElementById('currentAvatar').src = url;
+            currentAvatarImg.src = selectedAvatar;
         });
         container.appendChild(img);
-    });
-    const customInput = document.createElement('input');
+    }
+    var customInput = document.createElement('input');
     customInput.type = 'text';
     customInput.placeholder = '或输入图片URL';
-    customInput.style.width = '100%';
-    customInput.style.marginTop = '8px';
-    customInput.style.padding = '8px';
-    customInput.style.borderRadius = '20px';
-    customInput.style.border = '1px solid #ddd';
-    customInput.value = selectedUrl && !avatarPresets.includes(selectedUrl) ? selectedUrl : '';
-    customInput.addEventListener('input', (e) => {
+    customInput.style.cssText = 'width:100%; margin-top:8px; padding:8px; border-radius:20px; border:1px solid #ddd;';
+    customInput.value = selectedUrl && avatarPresets.indexOf(selectedUrl) === -1 ? selectedUrl : '';
+    customInput.addEventListener('input', function(e) {
         selectedAvatar = e.target.value;
-        document.getElementById('currentAvatar').src = selectedAvatar;
+        currentAvatarImg.src = selectedAvatar;
         renderAvatarOptions(selectedAvatar);
     });
     container.appendChild(customInput);
 }
 
+// ========== 加载个人信息 ==========
 async function loadProfile() {
-    const res = await fetch('/api/me', { credentials: 'include' });
-    const data = await res.json();
-    if (!data.success) {
+    var res = await window.apiRequest('/api/me', 'GET');
+    if (!res.success) {
         window.location.href = '/';
         return;
     }
-    currentUser = data.user;
-    document.getElementById('username').value = currentUser.username;
-    document.getElementById('email').value = currentUser.email || '';
-    document.getElementById('currentAvatar').src = currentUser.avatarUrl || DEFAULT_AVATAR_URL;
+    currentUser = res.user;
+    usernameInput.value = currentUser.username || '';
+    emailInput.value = currentUser.email || '';
+    currentAvatarImg.src = currentUser.avatarUrl || DEFAULT_AVATAR_URL;
     selectedAvatar = currentUser.avatarUrl || DEFAULT_AVATAR_URL;
     renderAvatarOptions(selectedAvatar);
-    const hiddenUsername = document.getElementById('hiddenUsername');
-    if (hiddenUsername) hiddenUsername.value = currentUser.username;
+    // 加载邮件公告接收设置
+    if (receiveEmailCheckbox) {
+        receiveEmailCheckbox.checked = currentUser.receive_email_announcements === 1;
+    }
+    var hiddenUsername = document.getElementById('hiddenUsername');
+    if (hiddenUsername) hiddenUsername.value = currentUser.username || '';
 }
 
-document.getElementById('avatarUpload').addEventListener('change', async (e) => {
-    const file = e.target.files[0];
+// ========== 头像上传 ==========
+avatarUpload.addEventListener('change', async function(e) {
+    var file = e.target.files[0];
     if (!file) return;
-    const formData = new FormData();
+    var formData = new FormData();
     formData.append('avatar', file);
-    const res = await fetch('/api/uploadAvatar', {
-        method: 'POST',
-        credentials: 'include',
-        body: formData
-    });
-    const data = await res.json();
-    if (data.success) {
-        currentUser.avatarUrl = data.avatarUrl;
-        document.getElementById('currentAvatar').src = data.avatarUrl;
-        alert('头像已更新');
-    } else {
-        alert('上传失败');
+    try {
+        var res = await fetch('/api/uploadAvatar', {
+            method: 'POST',
+            credentials: 'include',
+            body: formData
+        });
+        var data = await res.json();
+        if (data.success) {
+            currentUser.avatarUrl = data.avatarUrl;
+            currentAvatarImg.src = data.avatarUrl;
+            alert('头像已更新');
+        } else {
+            alert('上传失败：' + (data.message || '未知错误'));
+        }
+    } catch (err) {
+        alert('上传失败：' + err.message);
     }
+    avatarUpload.value = '';
 });
 
-document.getElementById('changeEmailBtn').addEventListener('click', () => {
-    const newEmailGroup = document.getElementById('newEmailGroup');
+// ========== 更换邮箱 ==========
+changeEmailBtn.addEventListener('click', function() {
     if (!changeEmailMode) {
         newEmailGroup.style.display = 'block';
         changeEmailMode = true;
-        document.getElementById('changeEmailBtn').innerText = '取消更换';
+        changeEmailBtn.innerText = '取消更换';
     } else {
         newEmailGroup.style.display = 'none';
         changeEmailMode = false;
-        document.getElementById('changeEmailBtn').innerText = '📧 更换邮箱';
-        document.getElementById('newEmail').value = '';
-        document.getElementById('emailVerifyCode').value = '';
+        changeEmailBtn.innerText = '📧 更换邮箱';
+        newEmailInput.value = '';
+        emailVerifyCodeInput.value = '';
     }
 });
 
-document.getElementById('cancelChangeEmailBtn')?.addEventListener('click', () => {
-    document.getElementById('newEmailGroup').style.display = 'none';
+cancelChangeEmailBtn.addEventListener('click', function() {
+    newEmailGroup.style.display = 'none';
     changeEmailMode = false;
-    document.getElementById('changeEmailBtn').innerText = '📧 更换邮箱';
-    document.getElementById('newEmail').value = '';
-    document.getElementById('emailVerifyCode').value = '';
+    changeEmailBtn.innerText = '📧 更换邮箱';
+    newEmailInput.value = '';
+    emailVerifyCodeInput.value = '';
 });
 
-document.getElementById('sendEmailCodeBtn').addEventListener('click', async () => {
-    const newEmail = document.getElementById('newEmail').value.trim();
+sendEmailCodeBtn.addEventListener('click', async function() {
+    var newEmail = newEmailInput.value.trim();
     if (!newEmail) {
         alert('请填写新邮箱');
         return;
     }
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    var emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     if (!emailRegex.test(newEmail)) {
         alert('邮箱格式不正确');
         return;
     }
-    const res = await fetch('/api/send-change-email-code', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify({ newEmail })
-    });
-    const data = await res.json();
-    if (data.success) {
-        alert('验证码已发送至新邮箱');
-    } else {
-        alert('发送失败：' + data.message);
+    try {
+        var res = await window.apiRequest('/api/send-change-email-code', 'POST', { newEmail: newEmail });
+        if (res.success) {
+            alert('验证码已发送至新邮箱');
+        } else {
+            alert('发送失败：' + res.message);
+        }
+    } catch (err) {
+        alert('发送失败：' + err.message);
     }
 });
 
-document.getElementById('confirmChangeEmailBtn').addEventListener('click', async () => {
-    const newEmail = document.getElementById('newEmail').value.trim();
-    const code = document.getElementById('emailVerifyCode').value.trim();
+confirmChangeEmailBtn.addEventListener('click', async function() {
+    var newEmail = newEmailInput.value.trim();
+    var code = emailVerifyCodeInput.value.trim();
     if (!newEmail || !code) {
         alert('请填写新邮箱和验证码');
         return;
     }
-    const res = await fetch('/api/change-email', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify({ newEmail, verificationCode: code })
-    });
-    const data = await res.json();
-    if (data.success) {
-        alert('邮箱已更新，请重新登录');
-        window.location.href = '/';
-    } else {
-        alert('更换失败：' + data.message);
+    try {
+        var res = await window.apiRequest('/api/change-email', 'POST', { newEmail: newEmail, verificationCode: code });
+        if (res.success) {
+            alert('邮箱已更新，请重新登录');
+            window.location.href = '/';
+        } else {
+            alert('更换失败：' + res.message);
+        }
+    } catch (err) {
+        alert('更换失败：' + err.message);
     }
 });
 
-document.getElementById('saveProfileBtn').addEventListener('click', async () => {
-    const username = document.getElementById('username').value.trim();
-    const oldPassword = document.getElementById('oldPassword').value;
-    const newPassword = document.getElementById('newPassword').value;
-    const confirmPassword = document.getElementById('confirmPassword').value;
-    const msgDiv = document.getElementById('profileMsg');
-    
+// ========== 保存个人信息 ==========
+saveProfileBtn.addEventListener('click', async function() {
+    var username = usernameInput.value.trim();
+    var oldPassword = oldPasswordInput.value;
+    var newPassword = newPasswordInput.value;
+    var confirmPassword = confirmPasswordInput.value;
+    var receiveEmailAnnouncements = receiveEmailCheckbox ? receiveEmailCheckbox.checked : true;
+
+    // 修改密码
     if (oldPassword || newPassword || confirmPassword) {
         if (!oldPassword || !newPassword || !confirmPassword) {
-            msgDiv.innerText = '请完整填写密码修改字段';
+            profileMsg.innerText = '请完整填写密码修改字段';
             return;
         }
         if (newPassword !== confirmPassword) {
-            msgDiv.innerText = '两次输入的新密码不一致';
+            profileMsg.innerText = '两次输入的新密码不一致';
             return;
         }
-        const pwdRes = await window.apiRequest('/api/changePassword', 'POST', { oldPassword, newPassword });
-        if (!pwdRes.success) {
-            msgDiv.innerText = pwdRes.message;
+        if (newPassword.length < 6) {
+            profileMsg.innerText = '新密码长度至少6位';
             return;
-        } else {
-            alert('密码修改成功');
-            document.getElementById('oldPassword').value = '';
-            document.getElementById('newPassword').value = '';
-            document.getElementById('confirmPassword').value = '';
+        }
+        try {
+            var pwdRes = await window.apiRequest('/api/changePassword', 'POST', { oldPassword: oldPassword, newPassword: newPassword });
+            if (!pwdRes.success) {
+                profileMsg.innerText = pwdRes.message;
+                return;
+            } else {
+                alert('密码修改成功');
+                oldPasswordInput.value = '';
+                newPasswordInput.value = '';
+                confirmPasswordInput.value = '';
+            }
+        } catch (err) {
+            profileMsg.innerText = '修改密码失败：' + err.message;
+            return;
         }
     }
-    
-    if (username !== currentUser.username) {
-        const updateRes = await window.apiRequest('/api/updateProfile', 'POST', { username });
+
+    // 更新用户资料（用户名 + 邮件公告设置）
+    try {
+        var updatePayload = { username: username, receiveEmailAnnouncements: receiveEmailAnnouncements };
+        var updateRes = await window.apiRequest('/api/updateProfile', 'POST', updatePayload);
         if (updateRes.success) {
             currentUser = updateRes.user;
-            document.getElementById('username').value = currentUser.username;
-            alert('基本信息已更新');
+            usernameInput.value = currentUser.username || '';
+            if (receiveEmailCheckbox) {
+                receiveEmailCheckbox.checked = currentUser.receive_email_announcements === 1;
+            }
+            alert('资料已更新');
+            profileMsg.innerText = '修改成功';
+            setTimeout(function() { profileMsg.innerText = ''; }, 3000);
         } else {
-            msgDiv.innerText = updateRes.message;
-            return;
+            profileMsg.innerText = updateRes.message || '更新失败';
         }
+    } catch (err) {
+        profileMsg.innerText = '更新失败：' + err.message;
     }
-    
-    msgDiv.innerText = '修改成功';
-    setTimeout(() => msgDiv.innerText = '', 3000);
 });
 
+// ========== Socket 连接 ==========
 function initSocket() {
     socket = io({ withCredentials: true });
     window.socket = socket;
-    socket.on('connect', () => socket.emit('update status', 'profile'));
-    socket.on('online users status', (users) => {
-        const container = document.getElementById('onlineList');
-        const countSpan = document.getElementById('onlineCount');
+    socket.on('connect', function() {
+        socket.emit('update status', 'profile');
+    });
+    socket.on('online users status', function(users) {
+        var container = document.getElementById('onlineList');
+        var countSpan = document.getElementById('onlineCount');
         if (!container) return;
         container.innerHTML = '';
         countSpan.innerText = users.length;
-        users.forEach(u => {
-            const div = document.createElement('div');
+        for (var i = 0; i < users.length; i++) {
+            var u = users[i];
+            var div = document.createElement('div');
             div.className = 'online-user';
-            const statusIcon = u.status === 'chat' ? '💬' : (u.status === 'files' ? '📁' : '📝');
-            const av = u.avatarUrl || DEFAULT_AVATAR_URL;
-            div.innerHTML = `<img src="${window.escapeHtml(av)}"><span>${window.escapeHtml(u.username)} ${statusIcon}</span>`;
+            var statusIcon = u.status === 'chat' ? '💬' : (u.status === 'files' ? '📁' : '📝');
+            var av = u.avatarUrl || DEFAULT_AVATAR_URL;
+            div.innerHTML = '<img src="' + window.escapeHtml(av) + '"><span>' + window.escapeHtml(u.username) + ' ' + statusIcon + '</span>';
             container.appendChild(div);
-        });
+        }
     });
-    socket.on('kicked', (reason) => {
+    socket.on('kicked', function(reason) {
         alert(reason);
         window.location.href = '/';
     });
 }
 
+// ========== 初始化 ==========
 loadProfile();
 initSocket();

@@ -21,7 +21,7 @@ const ALLOWED_TABLES = [
 
 // ========== 用户管理 ==========
 router.get('/api/admin/users', isAdmin, (req, res) => {
-    const users = db.prepare('SELECT userId, username, email, avatarUrl, role FROM users').all();
+    const users = db.prepare('SELECT userId, username, email, avatarUrl, role, receive_email_announcements FROM users').all();
     res.json({ success: true, users });
 });
 
@@ -33,14 +33,11 @@ router.post('/api/admin/kick', isAdmin, (req, res) => {
     const info = onlineUsers.get(Number(userId));
     if (info) {
         const io = getIO();
-        // #19 修复：清理用户所在的所有私聊房间
         for (const socketId of info.sockets) {
             const targetSocket = io?.sockets.sockets.get(socketId);
             if (targetSocket) {
-                // 获取该 socket 的所有房间
                 const rooms = Array.from(targetSocket.rooms || []);
                 for (const room of rooms) {
-                    // 退出所有私聊房间（格式：private:userId1-userId2）
                     if (room.startsWith('private:')) {
                         targetSocket.leave(room);
                     }
@@ -158,27 +155,96 @@ router.get('/api/admin/global-storage', isAdmin, (req, res) => {
 });
 
 // ========== 邮件公告 ==========
+// 发送邮件公告（支持批量发送，每3秒一封，显示进度）
 router.post('/api/admin/send-email-announcement', isAdmin, async (req, res) => {
-    const { target, subject, message } = req.body;
-    if (!subject || !message) return res.status(400).json({ success: false, message: '主题和内容不能为空' });
+    const { target, subject, message, userIds } = req.body;
+    if (!subject || !message) {
+        return res.status(400).json({ success: false, message: '主题和内容不能为空' });
+    }
+
     try {
+        let emailList = [];
+        let userList = [];
+
         if (target === 'all') {
-            const users = db.prepare('SELECT email FROM users WHERE email IS NOT NULL AND email != ""').all();
-            if (users.length === 0) return res.status(400).json({ success: false, message: '没有找到任何用户的邮箱' });
-            let successCount = 0, failCount = 0;
-            for (const u of users) {
-                try {
-                    await sendMail(u.email, subject, `<p>${message.replace(/\n/g, '<br>')}</p>`);
-                    successCount++;
-                } catch (err) { failCount++; }
-            }
-            res.json({ success: true, message: `邮件发送完成：成功 ${successCount}，失败 ${failCount}` });
+            // 获取所有有邮箱且接收邮件公告的用户
+            const users = db.prepare('SELECT userId, username, email FROM users WHERE email IS NOT NULL AND email != "" AND receive_email_announcements = 1').all();
+            emailList = users.map(u => ({ email: u.email, userId: u.userId, username: u.username }));
+            userList = users;
+        } else if (target === 'users' && userIds && userIds.length > 0) {
+            // 发送给指定的用户（已在网站注册）
+            const placeholders = userIds.map(() => '?').join(',');
+            const sql = `SELECT userId, username, email FROM users WHERE userId IN (${placeholders}) AND email IS NOT NULL AND email != "" AND receive_email_announcements = 1`;
+            const users = db.prepare(sql).all(...userIds);
+            emailList = users.map(u => ({ email: u.email, userId: u.userId, username: u.username }));
+            userList = users;
         } else if (target && target.includes('@')) {
-            await sendMail(target, subject, `<p>${message.replace(/\n/g, '<br>')}</p>`);
-            res.json({ success: true, message: `邮件已发送至 ${target}` });
+            // 发送给单个邮箱（兼容旧方式）
+            emailList = [{ email: target, userId: null, username: null }];
         } else {
-            res.status(400).json({ success: false, message: '目标格式错误' });
+            return res.status(400).json({ success: false, message: '目标格式错误' });
         }
+
+        if (emailList.length === 0) {
+            return res.status(400).json({ success: false, message: '没有找到符合条件的收件人' });
+        }
+
+        // 返回总数量，前端显示进度
+        res.json({
+            success: true,
+            total: emailList.length,
+            message: '开始发送邮件',
+            emails: emailList.map(e => e.email)
+        });
+
+        // 异步发送邮件（每3秒一封）
+        (async function sendEmails() {
+            let successCount = 0;
+            let failCount = 0;
+            const io = getIO();
+
+            for (let i = 0; i < emailList.length; i++) {
+                const recipient = emailList[i];
+                const email = recipient.email;
+                const username = recipient.username || '用户';
+
+                try {
+                    const personalizedMessage = message.replace(/\{username\}/g, username);
+                    await sendMail(email, subject, `<p>${personalizedMessage.replace(/\n/g, '<br>')}</p>`);
+                    successCount++;
+                    logToFile(`[邮件公告] 已发送至 ${email} (${i + 1}/${emailList.length})`);
+                } catch (err) {
+                    failCount++;
+                    console.error(`[邮件公告] 发送失败 ${email}:`, err);
+                }
+
+                // 发送进度更新到 WebSocket（如果管理员在线）
+                if (io) {
+                    io.to('admin').emit('email_progress', {
+                        sent: i + 1,
+                        total: emailList.length,
+                        success: successCount,
+                        fail: failCount,
+                        currentEmail: email
+                    });
+                }
+
+                // 每3秒发送一封（除了最后一封）
+                if (i < emailList.length - 1) {
+                    await new Promise(resolve => setTimeout(resolve, 3000));
+                }
+            }
+
+            logToFile(`[邮件公告] 发送完成：成功 ${successCount}，失败 ${failCount}`);
+            if (io) {
+                io.to('admin').emit('email_complete', {
+                    success: successCount,
+                    fail: failCount,
+                    total: emailList.length
+                });
+            }
+        })();
+
     } catch (err) {
         console.error('发送邮件失败:', err);
         res.status(500).json({ success: false, message: '发送失败: ' + err.message });
@@ -291,7 +357,6 @@ router.get('/api/admin/scan-files', isAdmin, async (req, res) => {
     for (const msg of messages) dbFilesMap.set(msg.fileUrl, { table: 'messages', id: msg.id });
     const users = db.prepare('SELECT userId, avatarUrl FROM users WHERE avatarUrl IS NOT NULL').all();
     for (const user of users) dbFilesMap.set(user.avatarUrl, { table: 'users', id: user.userId });
-    // #25 修复：添加云笔记附件到映射
     const noteAttachments = db.prepare('SELECT id, fileUrl FROM note_attachments WHERE fileUrl IS NOT NULL').all();
     for (const att of noteAttachments) {
         dbFilesMap.set(att.fileUrl, { table: 'note_attachments', id: att.id });
@@ -356,7 +421,7 @@ router.post('/api/admin/delete-missing-record', isAdmin, async (req, res) => {
     }
 });
 
-// ========== 数据库管理（安全审计） ==========
+// ========== 数据库管理 ==========
 router.get('/api/admin/db/tables', isAdmin, (req, res) => {
     const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").all();
     const filteredTables = tables.filter(t => ALLOWED_TABLES.includes(t.name));
@@ -419,7 +484,7 @@ router.get('/api/admin/db/data', isAdmin, (req, res) => {
     }
 });
 
-// ========== 重启服务器（优雅关闭） ==========
+// ========== 重启服务器 ==========
 router.post('/api/admin/restart', isAdmin, (req, res) => {
     res.json({ success: true, message: '服务器即将重启，倒计时10秒...' });
     const io = getIO();

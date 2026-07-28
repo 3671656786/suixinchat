@@ -2,7 +2,7 @@
 
 随心聊是一款 **功能完整的实时聊天网站**，集聊天室、个人网盘、云笔记、管理后台于一体，采用绿色清新风格设计，支持手机和电脑自适应访问。
 
-> **默认界面语言为中文 (简体)**。如需修改为英文或其他语言，请参考下方的 [🌐 多语言支持](#-多语言支持) 章节。
+> **当前版本：v2.2.0** | 默认界面语言为中文 (简体)。如需修改为英文或其他语言，请参考下方的 [🌐 多语言支持](#-多语言支持) 章节。
 
 ---
 
@@ -14,6 +14,7 @@
 - 个人资料修改（用户名、头像上传/预设/URL）
 - 密码修改
 - 每次登录强制阅读用户协议
+- **📧 邮件公告接收设置**（用户可自主选择是否接收系统邮件公告）
 
 ### 💬 聊天室
 - 实时群聊（支持 Emoji 快捷替换，如 `:smile:` → 😊）
@@ -41,23 +42,27 @@
 - 管理员可增删改查笔记（普通用户只读）
 - 多附件上传（单个 ≤50MB）
 - 附件管理（重命名、预览、下载、删除）
+- **笔记文件夹分类**（支持多级文件夹，可展开/折叠）
 
 ### ⚙️ 管理面板
 - 用户管理（踢出、封禁）
+- **用户邮件接收状态显示**（“已接收”/“已拒绝”标签）
 - 消息管理（查看/删除）
 - 公告管理（发布/删除，支持换行）
-- 邮件公告（SMTP 邮件群发）
+- **邮件公告增强**：
+  - 支持发送给所有已开启接收的用户、指定注册用户或单个邮箱
+  - **发送进度显示**（实时显示已发送数量、成功/失败数，每3秒自动发送一封）
 - 封禁管理（登录/聊天/网盘上传/下载/云笔记/全部，支持到期时间）
 - 邮箱黑名单
 - 服务器日志查看
 - 在线时长统计
 - 流量统计（上传/下载，日期筛选）
 - 全局网盘容量监控
-- 数据报表（定时/手动邮件报表）
+- **容量管理**（全局容量、个人容量、单文件大小限制）
+- **数据报表**（定时/手动邮件报表，包含用户、消息、文件、在线时长、流量、系统设置等详细数据）
 - 用户协议管理
 - 文件清理工具（扫描孤儿文件/缺失文件）
 - 数据库管理（只读查询）
-- **容量管理**（全局容量、个人容量、单文件大小限制）
 
 ### 📊 运营数据
 - 独立页面（/operations），普通用户可查看
@@ -337,7 +342,7 @@ function t(key) {
 
 SuixinChat is a **full-featured real-time chat website** integrating chat rooms, personal cloud storage, cloud notes, and an admin dashboard. It features a fresh green design with responsive mobile and desktop support.
 
-> **Default interface language is Chinese (Simplified).** For instructions on modifying the language, please refer to the [🌐 Internationalization](#-internationalization) section below.
+> **Current Version: v2.2.0** | Default interface language is Chinese (Simplified). For instructions on modifying the language, please refer to the [🌐 Internationalization](#-internationalization) section below.
 
 ---
 
@@ -349,6 +354,7 @@ SuixinChat is a **full-featured real-time chat website** integrating chat rooms,
 - Profile management (username, avatar upload/preset/URL)
 - Password change
 - Mandatory user agreement acceptance on each login
+- **📧 Email Announcement Preference** (users can opt-in/out of system email notifications)
 
 ### 💬 Chat Room
 - Real-time group chat (Emoji shortcuts like `:smile:` → 😊)
@@ -376,23 +382,27 @@ SuixinChat is a **full-featured real-time chat website** integrating chat rooms,
 - Admin: full CRUD operations (normal users: read-only)
 - Multi-attachment upload (single ≤50MB)
 - Attachment management (rename, preview, download, delete)
+- **Note folder classification** (multi-level folders with expand/collapse)
 
 ### ⚙️ Admin Panel
 - User management (kick, ban)
+- **User email reception status display** ("Accepted"/"Rejected" badges)
 - Message management (view/delete)
 - Announcement management (publish/delete, supports line breaks)
-- Email announcements (SMTP bulk email)
+- **Enhanced Email Announcements**:
+  - Send to all opted-in users, selected registered users, or a single email address
+  - **Real-time progress display** (sent count, success/fail, automatic 3-second interval)
 - Ban management (login/chat/upload/download/notes/all, with expiration)
 - Email blacklist
 - Server logs viewer
 - Online duration statistics
 - Traffic statistics (upload/download, date filter)
 - Global storage monitoring
-- Data reports (scheduled/manual email reports)
+- **Capacity Management** (global capacity, personal capacity, file size limit)
+- **Data Reports** (scheduled/manual email reports with detailed stats: users, messages, files, online duration, traffic, system settings, etc.)
 - User agreement management
 - File cleanup tool (scan orphan/missing files)
 - Database management (read-only queries)
-- **Capacity Management** (global capacity, personal capacity, file size limit)
 
 ### 📊 Operations Dashboard
 - Independent page (/operations), accessible to normal users
@@ -668,7 +678,12 @@ If this project helps you, please give it a Star!
 
 ## 更新日志 / Changelog
 
-### v2.2.0 (2026-07-25)
+### v2.2.0 (2026-07-28)
+- ✅ 新增用户邮件公告接收设置（用户可自主选择开启/关闭）
+- ✅ 管理员用户列表显示邮件接收状态（“已接收”/“已拒绝”标签）
+- ✅ 邮件公告支持发送给指定注册用户（多选）
+- ✅ 邮件公告发送时每3秒一封，实时显示进度条和倒计时
+- ✅ 数据报表增加详细内容（用户、消息、文件、在线时长、流量、系统设置等）
 - ✅ 修复 Session MemoryStore 内存泄漏 (SQLite 存储)
 - ✅ 修复群聊创建后自动加入 Socket 房间
 - ✅ 修复管理员踢人清理私聊房间
@@ -677,6 +692,7 @@ If this project helps you, please give it a Star!
 - ✅ 修复 UTF-16 文本文件误判
 - ✅ 修复云笔记附件被误识别为孤儿文件
 - ✅ 新增容量管理功能 (全局容量、个人容量、单文件大小限制)
+- ✅ 优化云笔记文件夹 UI（展开/折叠、操作按钮常驻）
 - ✅ 修复运营数据显示异常
 - ✅ 重构前端 escapeHtml 统一到 common.js
 - ✅ 新增数据库迁移脚本 migrate.js
@@ -699,15 +715,12 @@ If this project helps you, please give it a Star!
 
 ---
 
-## 更新说明
+## 主要更新点
 
-| 更新内容 | 说明 |
-|----------|------|
-| 语言说明 | 英文版开头添加了默认语言为中文的说明 |
-| 多语言支持章节 | 提供了两种修改语言的方法（直接修改和 i18n） |
-| 容量管理功能 | 中英文版都添加了容量管理功能描述 |
-| 项目结构 | 添加了 `migrate.js` 文件 |
-| 部署步骤 | 添加了数据库迁移脚本的使用说明 |
-| 更新日志 | 添加了 v2.2.0 的更新内容 |
-
----
+1. **版本号**：顶部和更新日志中明确标注 `v2.2.0`。
+2. **功能列表补充**：
+   - 用户系统增加“邮件公告接收设置”。
+   - 管理面板增加“用户邮件接收状态显示”和“邮件公告增强”子项。
+   - 云笔记增加“笔记文件夹分类”。
+3. **更新日志**：添加 `v2.2.0` 的详细变更条目。
+4. **整体介绍词**：优化了部分描述，使新功能一目了然。

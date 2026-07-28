@@ -16,7 +16,8 @@ async function initDatabase() {
             role TEXT DEFAULT 'user',
             createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
             agreed_agreement_version INTEGER DEFAULT 0,
-            agreed_agreement_at DATETIME
+            agreed_agreement_at DATETIME,
+            receive_email_announcements INTEGER DEFAULT 1
         );
         CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users(email) WHERE email IS NOT NULL;
 
@@ -63,7 +64,7 @@ async function initDatabase() {
             PRIMARY KEY (message_id, user_id)
         );
 
-        -- ========== 注册尝试记录表（防刷） ==========
+        -- ========== 注册尝试记录表 ==========
         CREATE TABLE IF NOT EXISTS reg_attempts (
             ip TEXT,
             attempt_time DATETIME DEFAULT CURRENT_TIMESTAMP
@@ -124,8 +125,10 @@ async function initDatabase() {
             content TEXT,
             createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
             updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP,
-            createdBy INTEGER
+            createdBy INTEGER,
+            folderId INTEGER DEFAULT 0
         );
+        CREATE INDEX IF NOT EXISTS idx_notes_folderId ON notes(folderId);
 
         CREATE TABLE IF NOT EXISTS note_attachments (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -137,6 +140,18 @@ async function initDatabase() {
             createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
         );
 
+        -- ========== 笔记文件夹表 ==========
+        CREATE TABLE IF NOT EXISTS note_folders (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            parentId INTEGER DEFAULT 0,
+            createdBy INTEGER NOT NULL,
+            createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (createdBy) REFERENCES users(userId)
+        );
+        CREATE INDEX IF NOT EXISTS idx_note_folders_parent ON note_folders(parentId);
+
         -- ========== 邮箱验证码表 ==========
         CREATE TABLE IF NOT EXISTS email_verifications (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -146,7 +161,7 @@ async function initDatabase() {
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         );
 
-        -- ========== 验证码频率限制表（防暴力破解） ==========
+        -- ========== 验证码频率限制表 ==========
         CREATE TABLE IF NOT EXISTS verification_cooldowns (
             key TEXT PRIMARY KEY,
             count INTEGER DEFAULT 0,
@@ -220,7 +235,7 @@ async function initDatabase() {
             updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
         );
 
-        -- ========== Session 存储表（可选） ==========
+        -- ========== Session 存储表 ==========
         CREATE TABLE IF NOT EXISTS sessions (
             sid TEXT PRIMARY KEY,
             sess TEXT NOT NULL,
@@ -240,11 +255,12 @@ async function initDatabase() {
     const adminExists = db.prepare('SELECT userId FROM users WHERE username = ?').get('admin');
     if (!adminExists) {
         const defaultHash = bcrypt.hashSync('admin123', 10);
-        db.prepare('INSERT INTO users (username, password, avatarUrl, role) VALUES (?, ?, ?, ?)').run(
+        db.prepare('INSERT INTO users (username, password, avatarUrl, role, receive_email_announcements) VALUES (?, ?, ?, ?, ?)').run(
             'admin',
             defaultHash,
             DEFAULT_AVATAR_URL,
-            'admin'
+            'admin',
+            1
         );
         console.log('✅ 默认管理员已创建：用户名 admin，密码 admin123');
     }
@@ -259,7 +275,7 @@ async function initDatabase() {
         console.log('✅ 已初始化报表配置');
     }
 
-    // ========== 初始化系统配置（全局容量） ==========
+    // ========== 初始化系统配置 ==========
     const maxGlobal = db.prepare('SELECT value FROM system_config WHERE key = ?').get('max_global_upload_bytes');
     if (!maxGlobal) {
         const defaultGlobal = DEFAULT_CAPACITY.global || 10 * 1024 * 1024 * 1024;
@@ -274,7 +290,6 @@ async function initDatabase() {
         console.log('✅ 已初始化系统配置（全局容量 ' + (defaultGlobal / 1024 / 1024 / 1024) + 'GB）');
     }
 
-    // ========== 初始化单文件大小限制 ==========
     const fileSizeRow = db.prepare('SELECT value FROM system_config WHERE key = ?').get('max_file_size_bytes');
     if (!fileSizeRow) {
         db.prepare('INSERT INTO system_config (key, value) VALUES (?, ?)').run(
@@ -284,7 +299,6 @@ async function initDatabase() {
         console.log('✅ 已初始化单文件大小限制 50MB');
     }
 
-    // ========== 初始化用户默认容量 ==========
     const userDefault = db.prepare('SELECT value FROM system_config WHERE key = ?').get('user_default_capacity_bytes');
     if (!userDefault) {
         const defaultUser = DEFAULT_CAPACITY.user || 100 * 1024 * 1024;
@@ -295,22 +309,17 @@ async function initDatabase() {
         console.log('✅ 已初始化用户默认容量 ' + (defaultUser / 1024 / 1024) + 'MB');
     }
 
-    // ========== 初始化协议版本 ==========
     const agreementVer = db.prepare('SELECT id FROM agreement_version WHERE id = 1').get();
     if (!agreementVer) {
         db.prepare('INSERT INTO agreement_version (id, version) VALUES (1, 1)').run();
         console.log('✅ 已初始化协议版本');
     }
 
-    // ========== 启用外键约束 ==========
     db.exec('PRAGMA foreign_keys = ON;');
 
-    // ========== 清理过期注册尝试记录（保留7天） ==========
     try {
         db.exec("DELETE FROM reg_attempts WHERE attempt_time < datetime('now', '-7 days')");
-    } catch (e) {
-        // 忽略错误
-    }
+    } catch (e) {}
 
     console.log('✅ 数据库初始化完成');
 }

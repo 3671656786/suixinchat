@@ -1,6 +1,6 @@
 {
   "name": "suixinchat",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "description": "随心聊 - 实时聊天网站，含聊天室、网盘、云笔记、管理后台",
   "main": "server.js",
   "scripts": {

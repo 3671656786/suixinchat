@@ -8,7 +8,7 @@ const fsSync = require('fs');
 const { PassThrough } = require('stream');
 const db = require('../db/connection');
 const { storage, fileFilter } = require('../config/multer');
-const { FILE_SIZE_LIMITS } = require('../config');
+const { FILE_SIZE_LIMITS, DEFAULT_CAPACITY } = require('../config');
 const { logToFile } = require('../utils/logger');
 const { isLoggedIn } = require('../middleware/auth');
 const { checkFilesUploadBan, checkFilesDownloadBan } = require('../middleware/banCheck');
@@ -18,13 +18,12 @@ const { validateFileType } = require('../utils/fileValidator');
 
 const UPLOAD_BASE = path.join(__dirname, '../uploads');
 
-// ---------- 全局容量辅助函数（原子更新）----------
+// ---------- 全局容量辅助函数 ----------
 function getGlobalUsedBytes() {
     const row = db.prepare('SELECT value FROM system_config WHERE key = ?').get('total_upload_bytes');
     return row ? parseInt(row.value) : 0;
 }
 
-// 原子增加/减少全局已用容量
 function updateGlobalUsedBytesAtomically(delta) {
     const deltaInt = parseInt(delta);
     const stmt = db.prepare(`UPDATE system_config SET value = CAST(value AS INTEGER) + ?, updated_at = CURRENT_TIMESTAMP WHERE key = ?`);
@@ -34,10 +33,10 @@ function updateGlobalUsedBytesAtomically(delta) {
 
 function getGlobalMaxBytes() {
     const row = db.prepare('SELECT value FROM system_config WHERE key = ?').get('max_global_upload_bytes');
-    return row ? parseInt(row.value) : 10 * 1024 * 1024 * 1024;
+    return row ? parseInt(row.value) : DEFAULT_CAPACITY.global || 10 * 1024 * 1024 * 1024;
 }
 
-// ---------- 个人容量辅助函数 ----------
+// ---------- 用户容量辅助函数 ----------
 function getUserUsedBytes(userId) {
     const userRootId = getUserRootId(userId);
     const files = db.prepare('SELECT fileSize FROM file_nodes WHERE parentId = ? AND isFolder = 0').all(userRootId);
@@ -45,7 +44,27 @@ function getUserUsedBytes(userId) {
     for (const f of files) total += f.fileSize || 0;
     return total;
 }
-const USER_MAX_BYTES = 100 * 1024 * 1024; // 100MB
+
+// 获取用户最大容量（优先使用自定义容量，否则使用默认值）
+function getUserMaxBytes(userId) {
+    // 检查用户是否为管理员
+    const user = db.prepare('SELECT role FROM users WHERE userId = ?').get(userId);
+    if (user && user.role === 'admin') {
+        return Infinity; // 管理员无限制
+    }
+    // 从 system_config 读取用户自定义容量
+    const customRow = db.prepare('SELECT value FROM system_config WHERE key = ?').get('user_capacity_' + userId);
+    if (customRow) {
+        const customBytes = parseInt(customRow.value);
+        if (customBytes > 0) {
+            return customBytes;
+        }
+    }
+    // 读取用户默认容量配置
+    const defaultRow = db.prepare('SELECT value FROM system_config WHERE key = ?').get('user_default_capacity_bytes');
+    const defaultBytes = defaultRow ? parseInt(defaultRow.value) : (DEFAULT_CAPACITY.user || 100 * 1024 * 1024);
+    return defaultBytes;
+}
 
 // ---------- 获取存储信息 ----------
 router.get('/api/user/storage', isLoggedIn, async (req, res) => {
@@ -55,23 +74,27 @@ router.get('/api/user/storage', isLoggedIn, async (req, res) => {
         if (user && user.role === 'admin') {
             const globalUsed = getGlobalUsedBytes();
             const globalMax = getGlobalMaxBytes();
-            return res.json({ 
-                success: true, unlimited: true,
-                globalUsed, globalMax,
+            return res.json({
+                success: true,
+                unlimited: true,
+                globalUsed,
+                globalMax,
                 globalUsedGB: (globalUsed / 1024 / 1024 / 1024).toFixed(2),
                 globalMaxGB: (globalMax / 1024 / 1024 / 1024).toFixed(0)
             });
         }
         const personalUsed = getUserUsedBytes(userId);
-        const personalMax = USER_MAX_BYTES;
+        const personalMax = getUserMaxBytes(userId);
         const globalUsed = getGlobalUsedBytes();
         const globalMax = getGlobalMaxBytes();
-        res.json({ 
+        res.json({
             success: true,
-            personalUsed, personalMax,
+            personalUsed,
+            personalMax,
             personalUsedMB: (personalUsed / 1024 / 1024).toFixed(2),
             personalMaxMB: (personalMax / 1024 / 1024).toFixed(0),
-            globalUsed, globalMax,
+            globalUsed,
+            globalMax,
             globalUsedGB: (globalUsed / 1024 / 1024 / 1024).toFixed(2),
             globalMaxGB: (globalMax / 1024 / 1024 / 1024).toFixed(0)
         });
@@ -180,7 +203,6 @@ router.post('/api/file/upload', isLoggedIn, checkFilesUploadBan, checkFileAccess
     });
 }, async (req, res) => {
     if (!req.file) return res.status(400).json({ success: false, message: '未上传文件' });
-    // 验证文件真实内容
     const validation = validateFileType(req.file.path, req.file.mimetype);
     if (!validation.valid) {
         try { fsSync.unlinkSync(req.file.path); } catch(e) {}
@@ -191,12 +213,13 @@ router.post('/api/file/upload', isLoggedIn, checkFilesUploadBan, checkFileAccess
     const user = db.prepare('SELECT username, role FROM users WHERE userId = ?').get(userId);
     let { parentId } = req.body;
     let targetParentId = parseInt(parentId) || 0;
-    
+
     if (!isAdmin) {
-        // 检查个人容量
+        // 检查个人容量（使用实际最大容量）
         const personalUsed = getUserUsedBytes(userId);
-        if (personalUsed + req.file.size > USER_MAX_BYTES) {
-            return res.status(413).json({ success: false, message: `个人网盘容量已达上限 100MB，无法上传` });
+        const personalMax = getUserMaxBytes(userId);
+        if (personalUsed + req.file.size > personalMax) {
+            return res.status(413).json({ success: false, message: `个人网盘容量已达上限 ${(personalMax / 1024 / 1024).toFixed(0)}MB，无法上传` });
         }
         // 检查全局容量
         const globalUsed = getGlobalUsedBytes();
@@ -210,19 +233,19 @@ router.post('/api/file/upload', isLoggedIn, checkFilesUploadBan, checkFileAccess
             return res.status(403).json({ success: false, message: '无权限上传到此目录' });
         }
     }
-    
+
     const fileUrl = `/uploads/public_files/${req.file.filename}`;
     try {
         db.prepare(`INSERT INTO file_nodes (name, parentId, isFolder, fileUrl, fileType, fileSize, originalName, uploaderId, uploaderName, createdAt, updatedAt)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`).run(
             req.file.originalname, targetParentId, 0, fileUrl, req.file.mimetype, req.file.size, req.file.originalname, userId, user.username);
-        
+
         db.prepare(`INSERT INTO user_traffic (user_id, type, bytes, path) VALUES (?, 'upload', ?, ?)`).run(userId, req.file.size, req.file.originalname);
-        
+
         if (!isAdmin) {
             updateGlobalUsedBytesAtomically(req.file.size);
         }
-        
+
         logToFile(`[网盘上传] 用户 ${user.username} 上传文件: ${req.file.originalname} (${req.file.size} bytes)`);
         res.json({ success: true });
     } catch (err) {
@@ -267,7 +290,7 @@ router.delete('/api/file/:id', isLoggedIn, checkFilesUploadBan, checkFileAccess,
             else canWrite = (item.parentId === req.userRootId) || isUnderUserRoot(item.parentId, req.userRootId);
             if (!canWrite) return res.status(403).json({ success: false, message: '无权限删除' });
         }
-        
+
         let deletedSize = 0;
         if (!item.isFolder && item.fileUrl) {
             const uploader = db.prepare('SELECT role FROM users WHERE userId = ?').get(item.uploaderId);
@@ -277,7 +300,7 @@ router.delete('/api/file/:id', isLoggedIn, checkFilesUploadBan, checkFileAccess,
             const safeFilePath = safePath(UPLOAD_BASE, item.fileUrl);
             try { await fs.unlink(safeFilePath); } catch (e) {}
         }
-        
+
         if (item.isFolder) {
             const children = db.prepare('SELECT * FROM file_nodes WHERE parentId = ?').all(Number(id));
             for (const child of children) {
@@ -292,13 +315,13 @@ router.delete('/api/file/:id', isLoggedIn, checkFilesUploadBan, checkFileAccess,
             }
             db.prepare('DELETE FROM file_nodes WHERE parentId = ?').run(Number(id));
         }
-        
+
         db.prepare('DELETE FROM file_nodes WHERE id = ?').run(Number(id));
-        
+
         if (deletedSize > 0) {
             updateGlobalUsedBytesAtomically(-deletedSize);
         }
-        
+
         res.json({ success: true });
     } catch (err) {
         console.error(err);
@@ -313,12 +336,12 @@ router.get('/api/file/download/:id', isLoggedIn, checkFilesDownloadBan, checkFil
     try {
         const item = db.prepare('SELECT * FROM file_nodes WHERE id = ? AND isFolder = 0').get(Number(id));
         if (!item) return res.status(404).json({ success: false, message: '文件不存在' });
-        
+
         db.prepare('UPDATE file_nodes SET downloadCount = downloadCount + 1 WHERE id = ?').run(Number(id));
         const safeFilePath = safePath(UPLOAD_BASE, item.fileUrl);
         await fs.access(safeFilePath);
         const user = db.prepare('SELECT username FROM users WHERE userId = ?').get(req.userId);
-        
+
         const disposition = isPreview ? 'inline' : 'attachment';
         let contentType = item.fileType || 'application/octet-stream';
         if (contentType.startsWith('text/') || item.name.match(/\.(txt|md|js|css|html|json|xml)$/i)) {
@@ -326,7 +349,7 @@ router.get('/api/file/download/:id', isLoggedIn, checkFilesDownloadBan, checkFil
         }
         res.setHeader('Content-Disposition', `${disposition}; filename*=UTF-8''${encodeURIComponent(item.originalName)}`);
         res.setHeader('Content-Type', contentType);
-        
+
         const readStream = fsSync.createReadStream(safeFilePath);
         const passThrough = new PassThrough();
         let bytesTransferred = 0, recorded = false;
@@ -376,7 +399,7 @@ router.post('/api/file/batch-delete', isLoggedIn, checkFilesUploadBan, checkFile
                 else canWrite = (item.parentId === req.userRootId) || isUnderUserRoot(item.parentId, req.userRootId);
                 if (!canWrite) return res.status(403).json({ success: false, message: '无权限删除某些文件' });
             }
-            
+
             if (!item.isFolder && item.fileUrl) {
                 const uploader = db.prepare('SELECT role FROM users WHERE userId = ?').get(item.uploaderId);
                 if (uploader && uploader.role === 'user') {
@@ -385,7 +408,7 @@ router.post('/api/file/batch-delete', isLoggedIn, checkFilesUploadBan, checkFile
                 const safeFilePath = safePath(UPLOAD_BASE, item.fileUrl);
                 try { await fs.unlink(safeFilePath); } catch (e) {}
             }
-            
+
             if (item.isFolder) {
                 const children = db.prepare('SELECT * FROM file_nodes WHERE parentId = ?').all(Number(id));
                 for (const child of children) {
@@ -402,11 +425,11 @@ router.post('/api/file/batch-delete', isLoggedIn, checkFilesUploadBan, checkFile
             }
             db.prepare('DELETE FROM file_nodes WHERE id = ?').run(Number(id));
         }
-        
+
         if (totalDeletedSize > 0) {
             updateGlobalUsedBytesAtomically(-totalDeletedSize);
         }
-        
+
         res.json({ success: true });
     } catch (err) {
         console.error(err);

@@ -1,5 +1,5 @@
-// public/admin.js - 第一部分
-// ========== 安全 Fallback：确保全局函数可用 ==========
+// public/admin.js
+// ========== 安全 Fallback ==========
 (function ensureGlobals() {
     if (typeof window.escapeHtml !== 'function') {
         window.escapeHtml = function(text) {
@@ -10,12 +10,18 @@
     }
     if (typeof window.apiRequest !== 'function') {
         window.apiRequest = function(url, method, body) {
-            return fetch(url, {
+            var isFormData = typeof FormData !== 'undefined' && body instanceof FormData;
+            var options = {
                 method: method,
-                headers: { 'Content-Type': 'application/json' },
-                credentials: 'include',
-                body: body ? JSON.stringify(body) : undefined
-            }).then(function(res) { return res.json(); });
+                credentials: 'include'
+            };
+            if (isFormData) {
+                options.body = body;
+            } else {
+                options.headers = { 'Content-Type': 'application/json' };
+                options.body = body ? JSON.stringify(body) : undefined;
+            }
+            return fetch(url, options).then(function(res) { return res.json(); });
         };
     }
     if (typeof window.formatFileSize !== 'function') {
@@ -29,9 +35,11 @@
     }
 })();
 
+// ========== 状态 ==========
 var socket = null;
 var currentUser = null;
 var currentCapacityUserId = null;
+var emailInterval = null;
 
 // ========== 用户管理 ==========
 async function loadUsers() {
@@ -42,7 +50,14 @@ async function loadUsers() {
         res.users.forEach(function(user) {
             var div = document.createElement('div');
             div.className = 'user-item';
-            div.innerHTML = '<div><img src="' + window.escapeHtml(user.avatarUrl || 'https://api.dicebear.com/7.x/avataaars/svg?seed=default') + '" style="width:32px;height:32px;border-radius:50%;vertical-align:middle;margin-right:8px;"><strong>' + window.escapeHtml(user.username) + '</strong> (ID: ' + user.userId + ') - ' + (user.role === 'admin' ? '管理员' : '普通用户') + (user.email ? '<span style="color:#999;"> (' + window.escapeHtml(user.email) + ')</span>' : '') + '</div><div>' + (user.role !== 'admin' ? '<button class="kick-btn" data-id="' + user.userId + '">踢出</button>' : '') + (user.role !== 'admin' ? '<button class="ban-btn" data-id="' + user.userId + '" data-name="' + window.escapeHtml(user.username) + '">🔒 封禁</button>' : '') + '</div>';
+            var emailBadge = '';
+            if (user.receive_email_announcements === 1) {
+                emailBadge = '<span class="badge-email-yes">📧 已接收</span>';
+            } else {
+                emailBadge = '<span class="badge-email-no">📧 已拒绝</span>';
+            }
+            div.innerHTML = 
+                '<div><img src="' + window.escapeHtml(user.avatarUrl || 'https://api.dicebear.com/7.x/avataaars/svg?seed=default') + '" style="width:32px;height:32px;border-radius:50%;vertical-align:middle;margin-right:8px;"><strong>' + window.escapeHtml(user.username) + '</strong> (ID: ' + user.userId + ') - ' + (user.role === 'admin' ? '管理员' : '普通用户') + (user.email ? ' <span style="color:#999;">(' + window.escapeHtml(user.email) + ')</span>' : '') + ' ' + emailBadge + '</div><div>' + (user.role !== 'admin' ? '<button class="kick-btn" data-id="' + user.userId + '">踢出</button>' : '') + (user.role !== 'admin' ? '<button class="ban-btn" data-id="' + user.userId + '" data-name="' + window.escapeHtml(user.username) + '">🔒 封禁</button>' : '') + '</div>';
             container.appendChild(div);
         });
         document.querySelectorAll('.kick-btn').forEach(function(btn) {
@@ -260,49 +275,134 @@ document.getElementById('publishAnnouncementBtn').addEventListener('click', func
 // ========== 邮件公告 ==========
 var emailTargetSelect = document.getElementById('emailTarget');
 var singleEmailInput = document.getElementById('singleEmail');
-if (emailTargetSelect) {
-    emailTargetSelect.addEventListener('change', function() {
-        singleEmailInput.style.display = emailTargetSelect.value === 'single' ? 'block' : 'none';
-    });
+var userSelectArea = document.getElementById('userSelectArea');
+var emailUserSelect = document.getElementById('emailUserSelect');
+var emailSubject = document.getElementById('emailSubject');
+var emailMessage = document.getElementById('emailMessage');
+var sendEmailBtn = document.getElementById('sendEmailBtn');
+var emailStatus = document.getElementById('emailStatus');
+var emailProgressArea = document.getElementById('emailProgressArea');
+var emailProgressFill = document.getElementById('emailProgressFill');
+var emailProgressText = document.getElementById('emailProgressText');
+var emailResult = document.getElementById('emailResult');
+
+// 切换目标类型
+emailTargetSelect.addEventListener('change', function() {
+    var val = emailTargetSelect.value;
+    singleEmailInput.style.display = val === 'single' ? 'block' : 'none';
+    userSelectArea.style.display = val === 'users' ? 'block' : 'none';
+    if (val === 'users') {
+        loadUserSelectOptions();
+    }
+});
+
+// 加载用户选择列表
+async function loadUserSelectOptions() {
+    var res = await window.apiRequest('/api/admin/users', 'GET');
+    if (res.success) {
+        var html = '';
+        res.users.forEach(function(user) {
+            if (user.email && user.email.trim() !== '') {
+                var disabled = user.receive_email_announcements === 0 ? ' style="opacity:0.5;"' : '';
+                var label = user.username + ' (' + user.email + ')' + (user.receive_email_announcements === 0 ? ' [已拒绝]' : '');
+                html += '<option value="' + user.userId + '"' + disabled + '>' + window.escapeHtml(label) + '</option>';
+            }
+        });
+        emailUserSelect.innerHTML = html;
+    }
 }
-document.getElementById('sendEmailBtn')?.addEventListener('click', function() {
+
+// 发送邮件
+sendEmailBtn.addEventListener('click', function() {
     var target = emailTargetSelect.value;
-    var subject = document.getElementById('emailSubject').value.trim();
-    var message = document.getElementById('emailMessage').value.trim();
+    var subject = emailSubject.value.trim();
+    var message = emailMessage.value.trim();
+
     if (!subject || !message) {
         alert('请填写主题和内容');
         return;
     }
-    var emailTarget = null;
+
+    var payload = { target: target, subject: subject, message: message };
+
     if (target === 'single') {
-        emailTarget = singleEmailInput.value.trim();
-        if (!emailTarget || !emailTarget.includes('@')) {
+        var singleEmail = singleEmailInput.value.trim();
+        if (!singleEmail || !singleEmail.includes('@')) {
             alert('请输入有效的邮箱地址');
             return;
         }
-    } else {
-        emailTarget = 'all';
+        payload.target = singleEmail;
+    } else if (target === 'users') {
+        var selected = Array.from(emailUserSelect.selectedOptions).map(function(opt) { return parseInt(opt.value); });
+        if (selected.length === 0) {
+            alert('请至少选择一个用户');
+            return;
+        }
+        payload.userIds = selected;
+    } else if (target === 'all') {
+        // 不额外操作
     }
+
+    // 禁用按钮，显示进度
+    sendEmailBtn.disabled = true;
+    sendEmailBtn.textContent = '⏳ 发送中...';
+    emailResult.innerHTML = '';
+    emailProgressArea.style.display = 'block';
+    emailProgressFill.style.width = '0%';
+    emailProgressText.textContent = '正在发送...';
+
+    // 发送请求
     fetch('/api/admin/send-email-announcement', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
-        body: JSON.stringify({ target: emailTarget, subject: subject, message: message })
-    }).then(function(res) { return res.json(); }).then(function(data) {
-        if (data.success) {
-            document.getElementById('emailResult').innerHTML = '<span style="color:green;">' + data.message + '</span>';
-            document.getElementById('emailSubject').value = '';
-            document.getElementById('emailMessage').value = '';
-            if (target === 'single') singleEmailInput.value = '';
+        body: JSON.stringify(payload)
+    })
+    .then(function(res) { return res.json(); })
+    .then(function(data) {
+        if (data.success && data.total) {
+            // 等待进度更新
+            emailStatus.textContent = '已开始发送 ' + data.total + ' 封邮件...';
         } else {
-            document.getElementById('emailResult').innerHTML = '<span style="color:red;">发送失败：' + data.message + '</span>';
+            emailResult.innerHTML = '<span style="color:red;">发送失败：' + (data.message || '未知错误') + '</span>';
+            sendEmailBtn.disabled = false;
+            sendEmailBtn.textContent = '🚀 发送邮件';
+            emailProgressArea.style.display = 'none';
         }
-    }).catch(function(err) {
-        document.getElementById('emailResult').innerHTML = '<span style="color:red;">网络错误：' + err.message + '</span>';
+    })
+    .catch(function(err) {
+        emailResult.innerHTML = '<span style="color:red;">网络错误：' + err.message + '</span>';
+        sendEmailBtn.disabled = false;
+        sendEmailBtn.textContent = '🚀 发送邮件';
+        emailProgressArea.style.display = 'none';
     });
 });
 
-// public/admin.js - 第二部分
+// Socket 接收邮件进度
+if (typeof io !== 'undefined') {
+    socket = io({ withCredentials: true });
+    window.socket = socket;
+
+    socket.on('email_progress', function(data) {
+        var percent = (data.sent / data.total * 100).toFixed(1);
+        emailProgressFill.style.width = percent + '%';
+        emailProgressText.textContent = '已发送 ' + data.sent + ' / ' + data.total + ' 封（成功：' + data.success + '，失败：' + data.fail + '）当前：' + data.currentEmail;
+        emailStatus.textContent = '发送中 ' + percent + '%';
+    });
+
+    socket.on('email_complete', function(data) {
+        sendEmailBtn.disabled = false;
+        sendEmailBtn.textContent = '🚀 发送邮件';
+        emailProgressFill.style.width = '100%';
+        emailProgressText.textContent = '✅ 发送完成！成功：' + data.success + '，失败：' + data.fail + '，总计：' + data.total;
+        emailStatus.textContent = '✅ 发送完成';
+        emailResult.innerHTML = '<span style="color:green;">邮件发送完成！成功 ' + data.success + ' 封，失败 ' + data.fail + ' 封</span>';
+        setTimeout(function() {
+            emailProgressArea.style.display = 'none';
+            emailProgressFill.style.width = '0%';
+        }, 5000);
+    });
+}
 
 // ========== 服务器日志 ==========
 async function loadLogs() {
@@ -386,7 +486,8 @@ async function loadGlobalStorage() {
         var usedGB = res.data.usedGB;
         var maxGB = res.data.maxGB;
         var percent = res.data.percent.toFixed(1);
-        container.innerHTML = '<div style="background:#f9f9f9; padding:12px; border-radius:16px;"><div>已用容量：' + usedGB + ' GB / ' + maxGB + ' GB (' + percent + '%)</div><div style="background:#e0e0e0; border-radius:8px; margin-top:8px; height:8px;"><div style="width:' + percent + '%; background:' + (percent > 80 ? '#e53935' : '#07c160') + '; height:8px; border-radius:8px;"></div></div></div>';
+        var barColor = percent > 80 ? '#e53935' : (percent > 60 ? '#ff9800' : '#07c160');
+        container.innerHTML = '<div style="background:#f9f9f9; padding:12px; border-radius:16px;"><div>已用容量：' + usedGB + ' GB / ' + maxGB + ' GB (' + percent + '%)</div><div style="background:#e0e0e0; border-radius:8px; margin-top:8px; height:8px; overflow:hidden;"><div style="width:' + percent + '%; background:' + barColor + '; height:8px; border-radius:8px;"></div></div></div>';
     } else {
         container.innerHTML = '<div style="color:#999;">加载失败</div>';
     }
@@ -487,14 +588,11 @@ document.getElementById('sendReportNowBtn')?.addEventListener('click', function(
 });
 
 // ========== 容量管理 ==========
-
-// 加载容量配置
 async function loadCapacityConfig() {
     try {
         var res = await window.apiRequest('/api/admin/capacity/config', 'GET');
         if (res.success) {
             var data = res.data;
-            // 全局容量
             var globalInfo = document.getElementById('globalCapacityInfo');
             if (globalInfo) {
                 var percent = (data.used / data.globalMax) * 100;
@@ -506,7 +604,6 @@ async function loadCapacityConfig() {
                     '<div style="width:' + Math.min(percent, 100) + '%; background:' + barColor + '; height:8px; border-radius:8px;"></div></div>';
                 document.getElementById('globalCapacityInput').value = parseFloat(data.globalMaxGB);
             }
-            // 文件大小限制
             var fileLimitInfo = document.getElementById('fileSizeLimitInfo');
             if (fileLimitInfo) {
                 fileLimitInfo.innerHTML = '当前限制：<strong>' + data.maxFileSizeMB + ' MB</strong>';
@@ -520,7 +617,6 @@ async function loadCapacityConfig() {
     }
 }
 
-// 更新全局容量
 document.getElementById('updateGlobalCapacityBtn')?.addEventListener('click', function() {
     var val = document.getElementById('globalCapacityInput').value.trim();
     if (!val || parseFloat(val) < 1) {
@@ -540,7 +636,6 @@ document.getElementById('updateGlobalCapacityBtn')?.addEventListener('click', fu
         });
 });
 
-// 更新文件大小限制
 document.getElementById('updateFileSizeLimitBtn')?.addEventListener('click', function() {
     var val = document.getElementById('fileSizeLimitInput').value.trim();
     if (!val || parseFloat(val) < 1) {
@@ -559,7 +654,6 @@ document.getElementById('updateFileSizeLimitBtn')?.addEventListener('click', fun
         });
 });
 
-// 加载用户容量列表
 async function loadUserCapacityList() {
     var container = document.getElementById('userCapacityList');
     if (!container) return;
@@ -590,7 +684,6 @@ async function loadUserCapacityList() {
     }
 }
 
-// 打开修改用户容量模态框
 window.openUserCapacityModal = function(userId, username, currentMaxMB) {
     var modal = document.getElementById('userCapacityModal');
     if (!modal) return;
@@ -675,7 +768,10 @@ document.querySelectorAll('.tab-btn').forEach(function(btn) {
         if (tab === 'users') loadUsers();
         else if (tab === 'messages') loadMessages();
         else if (tab === 'announcements') loadAnnouncements();
-        else if (tab === 'email') { /* 无需加载数据 */ }
+        else if (tab === 'email') { 
+            // 加载用户选择列表
+            if (emailTargetSelect.value === 'users') loadUserSelectOptions();
+        }
         else if (tab === 'logs') loadLogs();
         else if (tab === 'stats') {
             loadStats();
@@ -711,9 +807,12 @@ document.querySelectorAll('.tab-btn').forEach(function(btn) {
             loadReportConfig();
             loadCapacityConfig();
             loadUserCapacityList();
-            socket = io({ withCredentials: true });
-            window.socket = socket;
-            socket.on('kicked', function() { window.location.href = '/'; });
+            // 如果 socket 未初始化，等待 common.js 中的 socket
+            if (typeof io !== 'undefined' && !window.socket) {
+                socket = io({ withCredentials: true });
+                window.socket = socket;
+                socket.on('kicked', function() { window.location.href = '/'; });
+            }
         })
         .catch(function(err) {
             console.error('[admin] 初始化失败:', err);

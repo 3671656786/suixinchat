@@ -16,7 +16,7 @@ router.get('/api/me', (req, res) => {
     const userId = req.session.userId;
     if (!userId) return res.json({ success: false });
     try {
-        const user = db.prepare('SELECT userId, username, avatarUrl, role, email FROM users WHERE userId = ?').get(userId);
+        const user = db.prepare('SELECT userId, username, avatarUrl, role, email, receive_email_announcements FROM users WHERE userId = ?').get(userId);
         if (!user) return res.json({ success: false });
         res.json({ success: true, user });
     } catch (err) {
@@ -25,10 +25,10 @@ router.get('/api/me', (req, res) => {
     }
 });
 
-// 更新个人资料（仅用户名）
+// 更新个人资料（用户名 + 邮件公告接收设置）
 router.post('/api/updateProfile', isLoggedIn, async (req, res) => {
     const userId = req.userId;
-    const { username } = req.body;
+    const { username, receiveEmailAnnouncements } = req.body;
     try {
         if (username) {
             const existing = db.prepare('SELECT * FROM users WHERE username = ? AND userId != ?').get(username, userId);
@@ -38,7 +38,11 @@ router.post('/api/updateProfile', isLoggedIn, async (req, res) => {
             const onlineInfo = onlineUsers.get(userId);
             if (onlineInfo) onlineInfo.username = username;
         }
-        const updated = db.prepare('SELECT userId, username, avatarUrl, role, email FROM users WHERE userId = ?').get(userId);
+        if (receiveEmailAnnouncements !== undefined) {
+            const val = receiveEmailAnnouncements ? 1 : 0;
+            db.prepare('UPDATE users SET receive_email_announcements = ? WHERE userId = ?').run(val, userId);
+        }
+        const updated = db.prepare('SELECT userId, username, avatarUrl, role, email, receive_email_announcements FROM users WHERE userId = ?').get(userId);
         res.json({ success: true, user: updated });
     } catch (err) {
         console.error(err);
@@ -56,7 +60,6 @@ router.post('/api/uploadAvatar', isLoggedIn, (req, res, next) => {
 }, (req, res) => {
     const userId = req.userId;
     if (!req.file) return res.status(400).json({ success: false, message: '未上传文件' });
-    // 验证头像文件真实内容
     const validation = validateFileType(req.file.path, req.file.mimetype);
     if (!validation.valid) {
         try { require('fs').unlinkSync(req.file.path); } catch(e) {}

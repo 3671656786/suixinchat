@@ -8,13 +8,14 @@
     <style>
         .admin-page { max-width: 1200px; margin: 0 auto; padding: 1rem; }
         .back-home { display: inline-block; margin-bottom: 1rem; background: #f0f0f0; padding: 8px 16px; border-radius: 40px; text-decoration: none; color: #333; font-size: 0.9rem; }
+        .back-home:hover { background: #e0e0e0; }
         .admin-container { background: white; border-radius: 24px; padding: 20px; box-shadow: 0 4px 12px rgba(0,0,0,0.05); }
         .admin-tabs { display: flex; gap: 12px; border-bottom: 1px solid #eee; margin-bottom: 20px; flex-wrap: wrap; }
-        .tab-btn { padding: 8px 16px; background: none; border: none; cursor: pointer; border-radius: 40px; }
+        .tab-btn { padding: 8px 16px; background: none; border: none; cursor: pointer; border-radius: 40px; font-size: 0.9rem; }
         .tab-btn.active { background: var(--primary); color: white; }
         .admin-tab { display: none; }
         .admin-tab.active { display: block; }
-        .user-item, .message-item { display: flex; justify-content: space-between; align-items: center; padding: 12px; border-bottom: 1px solid #eee; }
+        .user-item, .message-item { display: flex; justify-content: space-between; align-items: center; padding: 12px; border-bottom: 1px solid #eee; flex-wrap: wrap; gap: 8px; }
         .kick-btn, .delete-msg-btn { background: var(--danger); color: white; border: none; padding: 4px 12px; border-radius: 20px; cursor: pointer; }
         .ban-btn { background: #ff9800; color: white; border: none; padding: 4px 12px; border-radius: 20px; cursor: pointer; margin-left: 8px; }
         .stats-table { width: 100%; border-collapse: collapse; }
@@ -38,6 +39,11 @@
         .capacity-card { background: #f9f9f9; padding: 16px; border-radius: 16px; margin-bottom: 20px; }
         .capacity-bar { background: #e0e0e0; border-radius: 8px; height: 8px; margin-top: 8px; overflow: hidden; }
         .capacity-bar-fill { height: 100%; border-radius: 8px; transition: width 0.3s; }
+        .email-progress-bar { width: 100%; height: 8px; background: #e0e0e0; border-radius: 4px; margin: 10px 0; overflow: hidden; }
+        .email-progress-fill { height: 100%; background: var(--primary); border-radius: 4px; transition: width 0.5s; width: 0%; }
+        .email-progress-text { font-size: 13px; color: #555; }
+        .badge-email-yes { background: #e8f5e9; color: #2e7d32; padding: 2px 10px; border-radius: 12px; font-size: 12px; }
+        .badge-email-no { background: #ffebee; color: #c62828; padding: 2px 10px; border-radius: 12px; font-size: 12px; }
         @media (max-width: 768px) { 
             .admin-tabs { justify-content: center; } 
             .user-item, .message-item { flex-direction: column; align-items: flex-start; gap: 8px; } 
@@ -69,6 +75,7 @@
             <button class="tab-btn" data-tab="capacity">📦 容量管理</button>
         </div>
 
+        <!-- ========== 用户管理 ========== -->
         <div id="usersTab" class="admin-tab active">
             <div style="margin-bottom: 12px;">
                 <button id="emailBlacklistBtn" class="btn-secondary">📧 邮箱黑名单管理</button>
@@ -76,27 +83,62 @@
             </div>
             <div id="userList"></div>
         </div>
+
+        <!-- ========== 消息管理 ========== -->
         <div id="messagesTab" class="admin-tab"><div id="messageList"></div></div>
+
+        <!-- ========== 公告管理 ========== -->
         <div id="announcementsTab" class="admin-tab">
             <div class="input-group"><textarea id="announcementContent" rows="3" placeholder="输入公告内容..."></textarea><button id="publishAnnouncementBtn" class="btn" style="margin-top:8px;">发布公告</button></div>
             <div id="announcementList"></div>
         </div>
+
+        <!-- ========== 邮件公告 ========== -->
         <div id="emailTab" class="admin-tab">
             <div class="email-form">
-                <select id="emailTarget"><option value="all">所有用户（有邮箱的）</option><option value="single">单个邮箱地址</option></select>
+                <select id="emailTarget">
+                    <option value="all">所有用户（已开启邮件接收）</option>
+                    <option value="users">指定用户</option>
+                    <option value="single">单个邮箱地址</option>
+                </select>
+
+                <div id="userSelectArea" style="display:none; margin-bottom:12px;">
+                    <label style="font-weight:500; display:block; margin-bottom:4px;">选择收件用户：</label>
+                    <select id="emailUserSelect" multiple style="width:100%; height:120px; padding:8px; border-radius:12px; border:1px solid #ddd; font-size:14px;">
+                    </select>
+                    <span style="font-size:12px; color:#999;">按住 Ctrl/Cmd 可多选</span>
+                </div>
+
                 <input type="email" id="singleEmail" placeholder="单个邮箱地址" style="display:none;">
                 <input type="text" id="emailSubject" placeholder="邮件主题">
-                <textarea id="emailMessage" placeholder="邮件内容" rows="5"></textarea>
-                <button id="sendEmailBtn" class="btn-primary">发送邮件</button>
+                <textarea id="emailMessage" placeholder="邮件内容（可使用 {username} 插入用户名）" rows="5"></textarea>
+
+                <div style="margin-top:10px;">
+                    <button id="sendEmailBtn" class="btn-primary">🚀 发送邮件</button>
+                    <span id="emailStatus" style="margin-left:12px; font-size:13px; color:#888;"></span>
+                </div>
+
+                <div id="emailProgressArea" style="display:none; margin-top:12px;">
+                    <div class="email-progress-bar"><div class="email-progress-fill" id="emailProgressFill"></div></div>
+                    <div class="email-progress-text" id="emailProgressText">准备发送...</div>
+                </div>
+
                 <div id="emailResult" style="margin-top: 10px;"></div>
             </div>
         </div>
+
+        <!-- ========== 服务器日志 ========== -->
         <div id="logsTab" class="admin-tab"><pre id="logsContent">加载中...</pre><button id="refreshLogsBtn" class="btn-secondary" style="margin-top:12px;">刷新日志</button></div>
+
+        <!-- ========== 在线统计 ========== -->
         <div id="statsTab" class="admin-tab">
-            <div id="statsContent">加载中...</div><button id="refreshStatsBtn" class="btn-secondary" style="margin-top:12px;">刷新统计</button>
+            <div id="statsContent">加载中...</div>
+            <button id="refreshStatsBtn" class="btn-secondary" style="margin-top:12px;">刷新统计</button>
             <div style="margin-top: 30px;"><h3>📊 用户流量统计（上传/下载）</h3><div id="trafficStatsContent">加载中...</div><div style="margin-top: 8px;"><label>开始日期: <input type="date" id="trafficStartDate"></label><label>结束日期: <input type="date" id="trafficEndDate"></label><button id="filterTrafficBtn" class="btn-secondary">筛选</button><button id="resetTrafficBtn" class="btn-secondary">重置</button></div></div>
             <div style="margin-top: 30px; border-top: 1px solid #eee; padding-top: 16px;"><h3>📦 全局网盘容量（普通用户总和）</h3><div id="globalStorageInfo">加载中...</div></div>
         </div>
+
+        <!-- ========== 数据报表 ========== -->
         <div id="reportTab" class="admin-tab">
             <h3>📊 数据报表配置</h3>
             <div class="report-config">
@@ -110,11 +152,10 @@
             <div id="reportPreview" style="margin-top: 20px; border-top: 1px solid #eee; padding-top: 16px;"><h4>📋 数据预览</h4><div id="previewContent" class="preview-content"></div></div>
             <p style="color:#999; font-size:12px; margin-top:12px;">提示：Cron 表达式格式为“分 时 日 月 周”，例如“0 9 * * *”表示每天9:00。</p>
         </div>
-        <!-- 容量管理标签页 -->
+
+        <!-- ========== 容量管理 ========== -->
         <div id="capacityTab" class="admin-tab">
             <h3>📦 容量管理</h3>
-            
-            <!-- 全局容量 -->
             <div class="capacity-card">
                 <h4>🌍 全局容量（所有普通用户总和）</h4>
                 <div id="globalCapacityInfo" style="margin-bottom:12px;">加载中...</div>
@@ -125,8 +166,6 @@
                     <button id="updateGlobalCapacityBtn" class="btn-primary">更新</button>
                 </div>
             </div>
-            
-            <!-- 单文件大小限制 -->
             <div class="capacity-card">
                 <h4>📄 单文件大小限制</h4>
                 <div id="fileSizeLimitInfo" style="margin-bottom:12px;">加载中...</div>
@@ -137,8 +176,6 @@
                     <button id="updateFileSizeLimitBtn" class="btn-primary">更新</button>
                 </div>
             </div>
-            
-            <!-- 用户容量列表 -->
             <div class="capacity-card">
                 <h4>👥 用户容量管理</h4>
                 <p style="color:#999; font-size:13px; margin-bottom:12px;">点击用户行可修改其个人容量</p>
@@ -148,13 +185,40 @@
     </div>
 </div>
 
-<div id="banModal" class="modal" style="display:none;"><div class="modal-content"><h3>用户封禁管理</h3><div id="banUserInfo"></div><div class="input-group"><label>封禁类型</label><select id="banType"><option value="login">登录封禁</option><option value="chat">聊天封禁</option><option value="files_upload">网盘上传封禁</option><option value="files_download">网盘下载封禁</option><option value="notes">云笔记封禁</option><option value="all">全部封禁</option></select></div><div class="input-group"><label>封禁原因</label><input type="text" id="banReason" placeholder="可选"></div><div class="input-group"><label>到期时间（留空永久）</label><input type="datetime-local" id="banExpiresAt"></div><div class="modal-buttons"><button id="cancelBanBtn">取消</button><button id="saveBanBtn" class="btn-primary">保存封禁</button></div><hr><h4>现有封禁</h4><div id="existingBansList"></div></div></div>
+<!-- ========== 封禁模态框 ========== -->
+<div id="banModal" class="modal" style="display:none;">
+    <div class="modal-content">
+        <h3>用户封禁管理</h3>
+        <div id="banUserInfo"></div>
+        <div class="input-group"><label>封禁类型</label><select id="banType"><option value="login">登录封禁</option><option value="chat">聊天封禁</option><option value="files_upload">网盘上传封禁</option><option value="files_download">网盘下载封禁</option><option value="notes">云笔记封禁</option><option value="all">全部封禁</option></select></div>
+        <div class="input-group"><label>封禁原因</label><input type="text" id="banReason" placeholder="可选"></div>
+        <div class="input-group"><label>到期时间（留空永久）</label><input type="datetime-local" id="banExpiresAt"></div>
+        <div class="modal-buttons"><button id="cancelBanBtn">取消</button><button id="saveBanBtn" class="btn-primary">保存封禁</button></div>
+        <hr><h4>现有封禁</h4><div id="existingBansList"></div>
+    </div>
+</div>
 
-<div id="emailBlacklistModal" class="modal" style="display:none;"><div class="modal-content"><h3>邮箱黑名单</h3><div class="input-group"><label>添加邮箱</label><input type="email" id="blacklistEmail" placeholder="example@domain.com"><input type="text" id="blacklistReason" placeholder="原因（可选）"><button id="addBlacklistBtn" class="btn-primary" style="margin-top:8px;">添加</button></div><div id="blacklistList"></div><div class="modal-buttons"><button id="closeBlacklistBtn">关闭</button></div></div></div>
+<!-- ========== 邮箱黑名单模态框 ========== -->
+<div id="emailBlacklistModal" class="modal" style="display:none;">
+    <div class="modal-content">
+        <h3>邮箱黑名单</h3>
+        <div class="input-group"><label>添加邮箱</label><input type="email" id="blacklistEmail" placeholder="example@domain.com"><input type="text" id="blacklistReason" placeholder="原因（可选）"><button id="addBlacklistBtn" class="btn-primary" style="margin-top:8px;">添加</button></div>
+        <div id="blacklistList"></div>
+        <div class="modal-buttons"><button id="closeBlacklistBtn">关闭</button></div>
+    </div>
+</div>
 
-<div id="agreementManageModal" class="modal" style="display:none;"><div class="modal-content" style="width: 700px;"><h3>📜 用户协议管理</h3><textarea id="agreementEditContent" rows="12" style="width:100%; padding:8px; border-radius:12px; border:1px solid #ddd; font-family: monospace;"></textarea><div class="modal-buttons"><button id="cancelAgreementBtn">取消</button><button id="saveAgreementBtn" class="btn-primary">保存协议</button></div><div id="agreementMsg" style="margin-top:8px;"></div></div></div>
+<!-- ========== 协议管理模态框 ========== -->
+<div id="agreementManageModal" class="modal" style="display:none;">
+    <div class="modal-content" style="width: 700px;">
+        <h3>📜 用户协议管理</h3>
+        <textarea id="agreementEditContent" rows="12" style="width:100%; padding:8px; border-radius:12px; border:1px solid #ddd; font-family: monospace;"></textarea>
+        <div class="modal-buttons"><button id="cancelAgreementBtn">取消</button><button id="saveAgreementBtn" class="btn-primary">保存协议</button></div>
+        <div id="agreementMsg" style="margin-top:8px;"></div>
+    </div>
+</div>
 
-<!-- 修改用户容量模态框 -->
+<!-- ========== 修改用户容量模态框 ========== -->
 <div id="userCapacityModal" class="modal" style="display:none;">
     <div class="modal-content">
         <h3>📁 修改用户容量</h3>

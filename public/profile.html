@@ -8,6 +8,7 @@
     <style>
         .profile-page { max-width: 500px; margin: 0 auto; padding: 1rem; }
         .back-home { display: inline-block; margin-bottom: 1rem; background: #f0f0f0; padding: 8px 16px; border-radius: 40px; text-decoration: none; color: #333; font-size: 0.9rem; }
+        .back-home:hover { background: #e0e0e0; }
         .profile-card { background: white; border-radius: 24px; padding: 24px; box-shadow: 0 4px 12px rgba(0,0,0,0.05); }
         .avatar-preview { text-align: center; margin-bottom: 20px; }
         .avatar-preview img { width: 100px; height: 100px; border-radius: 50%; object-fit: cover; }
@@ -17,6 +18,14 @@
         .online-sidebar { margin-top: 20px; background: white; border-radius: 16px; padding: 12px; }
         .email-verify-group { display: flex; gap: 8px; margin-top: 8px; }
         .email-verify-group input { flex: 1; }
+        .checkbox-group { display: flex; align-items: center; gap: 10px; margin-top: 4px; }
+        .checkbox-group input[type="checkbox"] { width: 18px; height: 18px; cursor: pointer; }
+        .checkbox-group label { font-weight: 500; color: #555; font-size: 0.9rem; cursor: pointer; }
+        .help-text { font-size: 12px; color: #999; margin-top: 2px; }
+        @media (max-width: 768px) {
+            .profile-page { padding: 0.5rem; }
+            .profile-card { padding: 16px; }
+        }
     </style>
 </head>
 <body>
@@ -52,6 +61,16 @@
                 <button id="confirmChangeEmailBtn" class="btn-primary">确认更换</button>
             </div>
         </div>
+
+        <!-- 新增：邮件公告接收设置 -->
+        <div class="input-group" style="margin-top:16px; padding-top:16px; border-top:1px solid #eee;">
+            <div class="checkbox-group">
+                <input type="checkbox" id="receiveEmailAnnouncements" checked>
+                <label for="receiveEmailAnnouncements">📧 接收邮件公告</label>
+            </div>
+            <div class="help-text">取消勾选后将不会收到管理员发送的邮件公告（包括全局公告和指定邮件）</div>
+        </div>
+
         <form id="passwordForm" onsubmit="return false;">
             <input type="text" id="hiddenUsername" name="username" style="display:none;" autocomplete="username" value="">
             <div class="input-group">
@@ -76,7 +95,7 @@
     </div>
 </div>
 <script src="/socket.io/socket.io.js"></script>
-<script src="profile.js"></script>
 <script src="common.js"></script>
+<script src="profile.js"></script>
 </body>
 </html>
