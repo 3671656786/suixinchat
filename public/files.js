@@ -47,14 +47,131 @@ function isVideoFile(fileName, fileType) { const videoExtensions = ['.mov','.mp4
 function openVideoPlayer(fileId, fileName) { if (!videoPlayerModal) return; const videoUrl = `/api/file/download/${fileId}?preview=true`; videoPlayer.pause(); videoPlayer.src = videoUrl; videoPlayer.load(); videoPlayerTitle.innerText = `🎬 正在播放: ${window.escapeHtml(fileName)}`; videoPlayerModal.style.display = 'flex'; if (downloadVideoBtn) downloadVideoBtn.onclick = () => window.open(`/api/file/download/${fileId}`, '_blank'); }
 function closeVideoPlayer() { if (videoPlayer) { videoPlayer.pause(); videoPlayer.src = ''; } if (videoPlayerModal) videoPlayerModal.style.display = 'none'; }
 if (closeVideoPlayerBtn) closeVideoPlayerBtn.addEventListener('click', closeVideoPlayer); if (videoPlayerModal) videoPlayerModal.addEventListener('click', (e) => { if (e.target === videoPlayerModal) closeVideoPlayer(); });
-function renderFileList(items) { if (!items || items.length === 0) { fileListDiv.innerHTML = '<div style="text-align:center;color:#999;padding:40px;">暂无内容</div>'; return; } let html = ''; items.forEach(item => { const icon = getFileIcon(item.fileType, item.isFolder === 1); const sizeText = item.isFolder ? '' : window.formatFileSize(item.fileSize); const isChecked = selectedFileIds.has(item.id) ? 'checked' : ''; html += `<div class="file-item ${selectMode ? 'select-mode' : ''}" data-id="${item.id}" data-isfolder="${item.isFolder}">${selectMode ? `<input type="checkbox" class="file-checkbox" data-id="${item.id}" ${isChecked}>` : ''}<div class="file-info"><div class="file-icon">${icon}</div><div><div class="file-name">${window.escapeHtml(item.name)}</div><div class="file-meta">${sizeText}</div></div></div><div class="file-actions">${!item.isFolder ? `<button class="preview" data-id="${item.id}" data-type="${item.fileType || ''}" data-name="${window.escapeHtml(item.name)}">预览</button>` : ''}${!item.isFolder ? `<button class="download" data-id="${item.id}">下载</button>` : ''}<button class="star" data-id="${item.id}" data-starred="${item.starred}">${item.starred ? '⭐' : '☆'}</button>${item.canWrite ? `<button class="rename" data-id="${item.id}" data-name="${window.escapeHtml(item.name)}">重命名</button>` : ''}${item.canWrite ? `<button class="delete" data-id="${item.id}">删除</button>` : ''}</div></div>`; }); fileListDiv.innerHTML = html;
-document.querySelectorAll('.file-info').forEach(el => { el.addEventListener('click', (e) => { if (selectMode) return; e.stopPropagation(); const parent = el.closest('.file-item'); const id = parseInt(parent.dataset.id); const isFolder = parent.dataset.isfolder === '1'; if (isFolder && currentView !== 'starred') { currentParentId = id; loadFiles(); } }); });
-document.querySelectorAll('.file-checkbox').forEach(cb => { cb.addEventListener('change', (e) => { e.stopPropagation(); const id = parseInt(cb.dataset.id); if (cb.checked) selectedFileIds.add(id); else selectedFileIds.delete(id); updateBatchButtons(); }); });
-document.querySelectorAll('.preview').forEach(btn => { btn.addEventListener('click', (e) => { e.stopPropagation(); const fileId = btn.dataset.id, fileType = btn.dataset.type || '', fileName = btn.dataset.name || '视频'; if (isVideoFile(fileName, fileType)) openVideoPlayer(fileId, fileName); else window.open(`/api/file/download/${fileId}?preview=true`, '_blank'); }); });
-document.querySelectorAll('.download').forEach(btn => { btn.addEventListener('click', (e) => { e.stopPropagation(); window.open(`/api/file/download/${btn.dataset.id}`, '_blank'); }); });
-document.querySelectorAll('.star').forEach(btn => { btn.addEventListener('click', async (e) => { e.stopPropagation(); const id = btn.dataset.id, currentStar = parseInt(btn.dataset.starred), newStar = currentStar ? 0 : 1; const res = await window.apiRequest(`/api/file/star/${id}`, 'POST', { starred: newStar }); if (res.success) { if (currentView === 'starred') await loadStarredFiles(); else await loadFiles(); } else alert('操作失败'); }); });
-document.querySelectorAll('.rename').forEach(btn => { btn.addEventListener('click', (e) => { e.stopPropagation(); currentRenameId = btn.dataset.id; renameInput.value = btn.dataset.name; renameModal.style.display = 'flex'; }); });
-document.querySelectorAll('.delete').forEach(btn => { btn.addEventListener('click', async (e) => { e.stopPropagation(); if (confirm('确定删除吗？')) { const res = await window.apiRequest(`/api/file/${btn.dataset.id}`, 'DELETE'); if (res.success) { if (currentView === 'starred') await loadStarredFiles(); else await loadFiles(); await loadStorage(); } else alert(res.message); } }); }); }
+
+function renderFileList(items) {
+    if (!items || items.length === 0) {
+        fileListDiv.innerHTML = '<div style="text-align:center;color:#999;padding:40px;">暂无内容</div>';
+        return;
+    }
+    let html = '';
+    items.forEach(item => {
+        const icon = getFileIcon(item.fileType, item.isFolder === 1);
+        const sizeText = item.isFolder ? '' : window.formatFileSize(item.fileSize);
+        const isChecked = selectedFileIds.has(item.id) ? 'checked' : '';
+        const isVideo = !item.isFolder && isVideoFile(item.name, item.fileType);
+        const canPreview = !item.isFolder && (item.fileType && item.fileType.startsWith('image/')) || isVideo;
+        html += `<div class="file-item ${selectMode ? 'select-mode' : ''}" data-id="${item.id}" data-isfolder="${item.isFolder}">`;
+        html += selectMode ? `<input type="checkbox" class="file-checkbox" data-id="${item.id}" ${isChecked}>` : '';
+        html += `<div class="file-info"><div class="file-icon">${icon}</div><div><div class="file-name">${window.escapeHtml(item.name)}</div><div class="file-meta">${sizeText}</div></div></div>`;
+        html += `<div class="file-actions">`;
+        if (!item.isFolder) {
+            if (canPreview) {
+                html += `<button class="preview" data-id="${item.id}" data-type="${item.fileType || ''}" data-name="${window.escapeHtml(item.name)}">预览</button>`;
+                if (isVideo) {
+                    html += `<button class="alt-preview" data-id="${item.id}" data-name="${window.escapeHtml(item.name)}" title="新窗口播放">🔄 备用预览</button>`;
+                }
+            }
+            html += `<button class="download" data-id="${item.id}">下载</button>`;
+        }
+        html += `<button class="star" data-id="${item.id}" data-starred="${item.starred}">${item.starred ? '⭐' : '☆'}</button>`;
+        if (item.canWrite) {
+            html += `<button class="rename" data-id="${item.id}" data-name="${window.escapeHtml(item.name)}">重命名</button>`;
+            html += `<button class="delete" data-id="${item.id}">删除</button>`;
+        }
+        html += `</div></div>`;
+    });
+    fileListDiv.innerHTML = html;
+
+    document.querySelectorAll('.file-info').forEach(el => {
+        el.addEventListener('click', (e) => {
+            if (selectMode) return;
+            e.stopPropagation();
+            const parent = el.closest('.file-item');
+            const id = parseInt(parent.dataset.id);
+            const isFolder = parent.dataset.isfolder === '1';
+            if (isFolder && currentView !== 'starred') {
+                currentParentId = id;
+                loadFiles();
+            }
+        });
+    });
+
+    document.querySelectorAll('.file-checkbox').forEach(cb => {
+        cb.addEventListener('change', (e) => {
+            e.stopPropagation();
+            const id = parseInt(cb.dataset.id);
+            if (cb.checked) selectedFileIds.add(id);
+            else selectedFileIds.delete(id);
+            updateBatchButtons();
+        });
+    });
+
+    document.querySelectorAll('.preview').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const fileId = btn.dataset.id, fileType = btn.dataset.type || '', fileName = btn.dataset.name || '视频';
+            if (isVideoFile(fileName, fileType)) {
+                openVideoPlayer(fileId, fileName);
+            } else {
+                window.open(`/api/file/download/${fileId}?preview=true`, '_blank');
+            }
+        });
+    });
+
+    // ===== 新增：备用预览（新窗口打开视频） =====
+    document.querySelectorAll('.alt-preview').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const fileId = btn.dataset.id;
+            const fileName = btn.dataset.name || '视频';
+            // 直接在新窗口打开视频URL，浏览器会尝试播放
+            window.open(`/api/file/download/${fileId}?preview=true`, '_blank');
+        });
+    });
+
+    document.querySelectorAll('.download').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            window.open(`/api/file/download/${btn.dataset.id}`, '_blank');
+        });
+    });
+
+    document.querySelectorAll('.star').forEach(btn => {
+        btn.addEventListener('click', async (e) => {
+            e.stopPropagation();
+            const id = btn.dataset.id, currentStar = parseInt(btn.dataset.starred), newStar = currentStar ? 0 : 1;
+            const res = await window.apiRequest(`/api/file/star/${id}`, 'POST', { starred: newStar });
+            if (res.success) {
+                if (currentView === 'starred') await loadStarredFiles();
+                else await loadFiles();
+            } else alert('操作失败');
+        });
+    });
+
+    document.querySelectorAll('.rename').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            currentRenameId = btn.dataset.id;
+            renameInput.value = btn.dataset.name;
+            renameModal.style.display = 'flex';
+        });
+    });
+
+    document.querySelectorAll('.delete').forEach(btn => {
+        btn.addEventListener('click', async (e) => {
+            e.stopPropagation();
+            if (confirm('确定删除吗？')) {
+                const res = await window.apiRequest(`/api/file/${btn.dataset.id}`, 'DELETE');
+                if (res.success) {
+                    if (currentView === 'starred') await loadStarredFiles();
+                    else await loadFiles();
+                    await loadStorage();
+                } else alert(res.message);
+            }
+        });
+    });
+}
+
 function updateBatchButtons() { const count = selectedFileIds.size; if (count > 0) { batchDeleteBtn.style.display = 'inline-block'; batchMoveBtn.style.display = 'inline-block'; } else { batchDeleteBtn.style.display = 'none'; batchMoveBtn.style.display = 'none'; } }
 async function batchDelete() { if (selectedFileIds.size === 0) return; if (confirm(`确定删除 ${selectedFileIds.size} 个文件/文件夹吗？`)) { const ids = Array.from(selectedFileIds); const res = await window.apiRequest('/api/file/batch-delete', 'POST', { ids }); if (res.success) { selectedFileIds.clear(); selectMode = false; toggleSelectModeBtn.innerText = '☑ 选择模式'; await loadFiles(); await loadStorage(); } else alert(res.message); } }
 async function loadFolderTree(selectedId = null) { const res = await fetch(`/api/file/list?parentId=0`, { credentials: 'include' }); const data = await res.json(); if (data.success) { const folders = data.items.filter(item => item.isFolder === 1); folderTree.innerHTML = ''; folders.forEach(folder => { const div = document.createElement('div'); div.className = `folder-tree-item ${selectedId === folder.id ? 'selected' : ''}`; div.innerHTML = `📁 ${window.escapeHtml(folder.name)}`; div.dataset.id = folder.id; div.addEventListener('click', () => { document.querySelectorAll('.folder-tree-item').forEach(el => el.classList.remove('selected')); div.classList.add('selected'); moveTargetIds = [folder.id]; }); folderTree.appendChild(div); }); const rootDiv = document.createElement('div'); rootDiv.className = `folder-tree-item ${selectedId === 0 ? 'selected' : ''}`; rootDiv.innerHTML = `📁 根目录`; rootDiv.dataset.id = 0; rootDiv.addEventListener('click', () => { document.querySelectorAll('.folder-tree-item').forEach(el => el.classList.remove('selected')); rootDiv.classList.add('selected'); moveTargetIds = [0]; }); folderTree.insertBefore(rootDiv, folderTree.firstChild); } }

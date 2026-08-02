@@ -14,7 +14,7 @@ async function initDatabase() {
             email TEXT,
             avatarUrl TEXT,
             role TEXT DEFAULT 'user',
-            createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+            createdAt DATETIME DEFAULT (datetime('now')),
             agreed_agreement_version INTEGER DEFAULT 0,
             agreed_agreement_at DATETIME,
             receive_email_announcements INTEGER DEFAULT 1
@@ -31,7 +31,7 @@ async function initDatabase() {
             fileUrl TEXT,
             fileName TEXT,
             fileType TEXT,
-            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+            timestamp DATETIME DEFAULT (datetime('now')),
             replyToId INTEGER DEFAULT NULL,
             replyToUsername TEXT,
             replyToContent TEXT,
@@ -50,7 +50,7 @@ async function initDatabase() {
             fileUrl TEXT,
             fileName TEXT,
             fileType TEXT,
-            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+            timestamp DATETIME DEFAULT (datetime('now')),
             is_read INTEGER DEFAULT 0
         );
         CREATE INDEX IF NOT EXISTS idx_private_messages_users ON private_messages(from_user, to_user);
@@ -60,14 +60,14 @@ async function initDatabase() {
         CREATE TABLE IF NOT EXISTS message_reads (
             message_id INTEGER NOT NULL,
             user_id INTEGER NOT NULL,
-            read_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            read_at DATETIME DEFAULT (datetime('now')),
             PRIMARY KEY (message_id, user_id)
         );
 
         -- ========== 注册尝试记录表 ==========
         CREATE TABLE IF NOT EXISTS reg_attempts (
             ip TEXT,
-            attempt_time DATETIME DEFAULT CURRENT_TIMESTAMP
+            attempt_time DATETIME DEFAULT (datetime('now'))
         );
 
         -- ========== 公告表 ==========
@@ -76,7 +76,7 @@ async function initDatabase() {
             content TEXT NOT NULL,
             publisherId INTEGER NOT NULL,
             publisherName TEXT,
-            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+            timestamp DATETIME DEFAULT (datetime('now'))
         );
 
         -- ========== 网盘文件节点表 ==========
@@ -93,8 +93,8 @@ async function initDatabase() {
             uploaderName TEXT,
             downloadCount INTEGER DEFAULT 0,
             starred INTEGER DEFAULT 0,
-            createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
-            updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP
+            createdAt DATETIME DEFAULT (datetime('now')),
+            updatedAt DATETIME DEFAULT (datetime('now'))
         );
         CREATE INDEX IF NOT EXISTS idx_file_nodes_parentId ON file_nodes(parentId);
 
@@ -104,7 +104,10 @@ async function initDatabase() {
             name TEXT NOT NULL,
             description TEXT DEFAULT '',
             ownerId INTEGER NOT NULL,
-            createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
+            createdAt DATETIME DEFAULT (datetime('now')),
+            avatar TEXT,
+            join_approval INTEGER DEFAULT 0,
+            allow_join INTEGER DEFAULT 1
         );
 
         CREATE TABLE IF NOT EXISTS group_members (
@@ -112,19 +115,46 @@ async function initDatabase() {
             groupId INTEGER NOT NULL,
             userId INTEGER NOT NULL,
             role TEXT DEFAULT 'member',
-            joinedAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+            joinedAt DATETIME DEFAULT (datetime('now')),
             UNIQUE(groupId, userId)
         );
         CREATE INDEX IF NOT EXISTS idx_group_members_group ON group_members(groupId);
         CREATE INDEX IF NOT EXISTS idx_group_members_user ON group_members(userId);
+
+        -- ========== 群黑名单表 ==========
+        CREATE TABLE IF NOT EXISTS group_ban_list (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            group_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            banned_at DATETIME DEFAULT (datetime('now')),
+            reason TEXT,
+            UNIQUE(group_id, user_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_group_ban_group ON group_ban_list(group_id);
+        CREATE INDEX IF NOT EXISTS idx_group_ban_user ON group_ban_list(user_id);
+
+        -- ========== 群加入申请表 ==========
+        CREATE TABLE IF NOT EXISTS group_join_requests (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            group_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            reason TEXT,
+            status TEXT DEFAULT 'pending',
+            requested_at DATETIME DEFAULT (datetime('now')),
+            processed_at DATETIME,
+            processed_by INTEGER,
+            UNIQUE(group_id, user_id, status)
+        );
+        CREATE INDEX IF NOT EXISTS idx_join_requests_group ON group_join_requests(group_id);
+        CREATE INDEX IF NOT EXISTS idx_join_requests_status ON group_join_requests(status);
 
         -- ========== 云笔记表 ==========
         CREATE TABLE IF NOT EXISTS notes (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             title TEXT,
             content TEXT,
-            createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
-            updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+            createdAt DATETIME DEFAULT (datetime('now')),
+            updatedAt DATETIME DEFAULT (datetime('now')),
             createdBy INTEGER,
             folderId INTEGER DEFAULT 0
         );
@@ -137,7 +167,7 @@ async function initDatabase() {
             fileName TEXT NOT NULL,
             fileType TEXT,
             fileSize INTEGER,
-            createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
+            createdAt DATETIME DEFAULT (datetime('now'))
         );
 
         -- ========== 笔记文件夹表 ==========
@@ -146,8 +176,8 @@ async function initDatabase() {
             name TEXT NOT NULL,
             parentId INTEGER DEFAULT 0,
             createdBy INTEGER NOT NULL,
-            createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
-            updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+            createdAt DATETIME DEFAULT (datetime('now')),
+            updatedAt DATETIME DEFAULT (datetime('now')),
             FOREIGN KEY (createdBy) REFERENCES users(userId)
         );
         CREATE INDEX IF NOT EXISTS idx_note_folders_parent ON note_folders(parentId);
@@ -158,7 +188,7 @@ async function initDatabase() {
             email TEXT NOT NULL,
             code TEXT NOT NULL,
             expires_at DATETIME NOT NULL,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            created_at DATETIME DEFAULT (datetime('now'))
         );
 
         -- ========== 验证码频率限制表 ==========
@@ -185,7 +215,7 @@ async function initDatabase() {
             type TEXT NOT NULL,
             bytes INTEGER NOT NULL,
             path TEXT,
-            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+            timestamp DATETIME DEFAULT (datetime('now'))
         );
         CREATE INDEX IF NOT EXISTS idx_user_traffic_user ON user_traffic(user_id);
         CREATE INDEX IF NOT EXISTS idx_user_traffic_time ON user_traffic(timestamp);
@@ -197,7 +227,7 @@ async function initDatabase() {
             cron TEXT DEFAULT '0 9 * * *',
             emails TEXT,
             data_types TEXT,
-            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            updated_at DATETIME DEFAULT (datetime('now'))
         );
 
         -- ========== 用户封禁表 ==========
@@ -206,7 +236,7 @@ async function initDatabase() {
             user_id INTEGER NOT NULL,
             ban_type TEXT NOT NULL,
             reason TEXT,
-            banned_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            banned_at DATETIME DEFAULT (datetime('now')),
             expires_at DATETIME,
             UNIQUE(user_id, ban_type)
         );
@@ -218,21 +248,21 @@ async function initDatabase() {
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             email TEXT UNIQUE NOT NULL,
             reason TEXT,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            created_at DATETIME DEFAULT (datetime('now'))
         );
 
         -- ========== 系统配置表 ==========
         CREATE TABLE IF NOT EXISTS system_config (
             key TEXT PRIMARY KEY,
             value TEXT,
-            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            updated_at DATETIME DEFAULT (datetime('now'))
         );
 
         -- ========== 用户协议版本表 ==========
         CREATE TABLE IF NOT EXISTS agreement_version (
             id INTEGER PRIMARY KEY CHECK (id = 1) DEFAULT 1,
             version INTEGER DEFAULT 1,
-            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            updated_at DATETIME DEFAULT (datetime('now'))
         );
 
         -- ========== Session 存储表 ==========

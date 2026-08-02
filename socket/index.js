@@ -67,18 +67,18 @@ function initSocket(server, sessionMiddleware) {
         allowEIO3: true,
         transports: ['websocket', 'polling']
     });
-    
+
     io.use((socket, next) => {
         sessionMiddleware(socket.request, {}, next);
     });
-    
+
     io.on('connection', async (socket) => {
         const userId = socket.request.session.userId;
         if (!userId) {
             socket.disconnect();
             return;
         }
-        
+
         let user;
         try {
             user = db.prepare('SELECT userId, username, avatarUrl, role FROM users WHERE userId = ?').get(userId);
@@ -90,7 +90,12 @@ function initSocket(server, sessionMiddleware) {
             socket.disconnect();
             return;
         }
-        
+
+        if (user.role === 'admin') {
+            socket.join('admin');
+            console.log(`[Socket] 管理员 ${user.username} (${userId}) 已加入 admin 房间`);
+        }
+
         addOnlineUser(userId, {
             socketId: socket.id,
             status: 'chat',
@@ -100,18 +105,18 @@ function initSocket(server, sessionMiddleware) {
         socket.user = { ...user, heartbeatActive: false };
         socket.join('global');
         broadcastOnlineUsers();
-        
+
         startHeartbeat(socket, userId, onlineUsers, db, broadcastOnlineUsers);
-        
+
         const chatHandler = require('./chatHandler');
         const privateHandler = require('./privateHandler');
         const statusHandler = require('./statusHandler');
-        
+
         chatHandler(socket, io, onlineUsers, db, logToFile);
         privateHandler(socket, io, onlineUsers, db);
         statusHandler(socket, io, onlineUsers, db, addOnlineUser, removeOnlineUser, updateUserStatus, broadcastOnlineUsers);
     });
-    
+
     return io;
 }
 

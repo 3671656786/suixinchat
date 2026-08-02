@@ -45,14 +45,11 @@ function getUserUsedBytes(userId) {
     return total;
 }
 
-// 获取用户最大容量（优先使用自定义容量，否则使用默认值）
 function getUserMaxBytes(userId) {
-    // 检查用户是否为管理员
     const user = db.prepare('SELECT role FROM users WHERE userId = ?').get(userId);
     if (user && user.role === 'admin') {
-        return Infinity; // 管理员无限制
+        return Infinity;
     }
-    // 从 system_config 读取用户自定义容量
     const customRow = db.prepare('SELECT value FROM system_config WHERE key = ?').get('user_capacity_' + userId);
     if (customRow) {
         const customBytes = parseInt(customRow.value);
@@ -60,10 +57,19 @@ function getUserMaxBytes(userId) {
             return customBytes;
         }
     }
-    // 读取用户默认容量配置
     const defaultRow = db.prepare('SELECT value FROM system_config WHERE key = ?').get('user_default_capacity_bytes');
     const defaultBytes = defaultRow ? parseInt(defaultRow.value) : (DEFAULT_CAPACITY.user || 100 * 1024 * 1024);
     return defaultBytes;
+}
+
+// ---------- 修复 #8: 带锁的容量检查 ----------
+let capacityLock = Promise.resolve();
+
+function withCapacityLock(fn) {
+    return capacityLock = capacityLock.then(() => fn()).catch(err => {
+        console.error('[容量锁] 执行失败:', err);
+        throw err;
+    });
 }
 
 // ---------- 获取存储信息 ----------
@@ -169,16 +175,35 @@ router.get('/api/file/info/:id', isLoggedIn, checkFileAccess, (req, res) => {
     }
 });
 
-// 创建文件夹（仅管理员）
+// ========== 创建文件夹（修复 N7: 允许用户在自己的根目录下创建文件夹） ==========
 router.post('/api/file/folder', isLoggedIn, checkFilesUploadBan, checkFileAccess, (req, res) => {
     const { name, parentId } = req.body;
+    const userId = req.userId;
     if (!name) return res.status(400).json({ success: false, message: '文件夹名称不能为空' });
-    if (!req.isAdmin) return res.status(403).json({ success: false, message: '只有管理员可以创建文件夹' });
+    
     let targetParentId = parseInt(parentId) || 0;
+    const userRootId = req.userRootId;
+    const isAdmin = req.isAdmin;
+
     try {
+        // 检查权限：管理员可以创建在任何位置，普通用户只能在自己的根目录下创建
+        if (!isAdmin) {
+            if (targetParentId !== userRootId && !isUnderUserRoot(targetParentId, userRootId)) {
+                return res.status(403).json({ success: false, message: '无权限在此位置创建文件夹' });
+            }
+            // 普通用户只能创建一级文件夹（在根目录下）
+            if (targetParentId !== userRootId) {
+                return res.status(403).json({ success: false, message: '普通用户只能在根目录下创建文件夹' });
+            }
+        }
+
         const existing = db.prepare('SELECT * FROM file_nodes WHERE parentId = ? AND name = ?').get(targetParentId, name);
         if (existing) return res.status(400).json({ success: false, message: '同名文件夹已存在' });
-        db.prepare('INSERT INTO file_nodes (name, parentId, isFolder) VALUES (?, ?, ?)').run(name, targetParentId, 1);
+        
+        db.prepare('INSERT INTO file_nodes (name, parentId, isFolder, uploaderId, uploaderName, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)')
+            .run(name, targetParentId, 1, userId, req.user?.username || 'user');
+        
+        logToFile(`[网盘] 用户 ${userId} 创建文件夹: ${name} (parentId: ${targetParentId})`);
         res.json({ success: true });
     } catch (err) {
         console.error(err);
@@ -186,7 +211,7 @@ router.post('/api/file/folder', isLoggedIn, checkFilesUploadBan, checkFileAccess
     }
 });
 
-// 上传文件（原子更新全局容量）
+// ========== 上传文件（修复 #8: 带锁的容量检查） ==========
 router.post('/api/file/upload', isLoggedIn, checkFilesUploadBan, checkFileAccess, (req, res, next) => {
     const userId = req.userId;
     const isAdmin = req.isAdmin;
@@ -203,52 +228,67 @@ router.post('/api/file/upload', isLoggedIn, checkFilesUploadBan, checkFileAccess
     });
 }, async (req, res) => {
     if (!req.file) return res.status(400).json({ success: false, message: '未上传文件' });
+    
     const validation = validateFileType(req.file.path, req.file.mimetype);
     if (!validation.valid) {
         try { fsSync.unlinkSync(req.file.path); } catch(e) {}
         return res.status(400).json({ success: false, message: '文件类型验证失败：' + validation.reason });
     }
+    
     const userId = req.userId;
     const isAdmin = req.isAdmin;
     const user = db.prepare('SELECT username, role FROM users WHERE userId = ?').get(userId);
     let { parentId } = req.body;
     let targetParentId = parseInt(parentId) || 0;
 
+    // 检查目录权限（非管理员）
     if (!isAdmin) {
-        // 检查个人容量（使用实际最大容量）
-        const personalUsed = getUserUsedBytes(userId);
-        const personalMax = getUserMaxBytes(userId);
-        if (personalUsed + req.file.size > personalMax) {
-            return res.status(413).json({ success: false, message: `个人网盘容量已达上限 ${(personalMax / 1024 / 1024).toFixed(0)}MB，无法上传` });
-        }
-        // 检查全局容量
-        const globalUsed = getGlobalUsedBytes();
-        const globalMax = getGlobalMaxBytes();
-        if (globalUsed + req.file.size > globalMax) {
-            return res.status(413).json({ success: false, message: `普通用户上传总容量已达上限 10GB，无法继续上传` });
-        }
-        // 检查目录权限
         const userRootId = req.userRootId;
         if (targetParentId !== userRootId && !isUnderUserRoot(targetParentId, userRootId)) {
+            try { fsSync.unlinkSync(req.file.path); } catch(e) {}
             return res.status(403).json({ success: false, message: '无权限上传到此目录' });
         }
     }
 
-    const fileUrl = `/uploads/public_files/${req.file.filename}`;
+    // ========== 修复 #8: 使用锁进行容量检查 ==========
     try {
-        db.prepare(`INSERT INTO file_nodes (name, parentId, isFolder, fileUrl, fileType, fileSize, originalName, uploaderId, uploaderName, createdAt, updatedAt)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`).run(
-            req.file.originalname, targetParentId, 0, fileUrl, req.file.mimetype, req.file.size, req.file.originalname, userId, user.username);
+        await withCapacityLock(async () => {
+            if (!isAdmin) {
+                // 检查个人容量
+                const personalUsed = getUserUsedBytes(userId);
+                const personalMax = getUserMaxBytes(userId);
+                if (personalUsed + req.file.size > personalMax) {
+                    throw new Error(`个人网盘容量已达上限 ${(personalMax / 1024 / 1024).toFixed(0)}MB，无法上传`);
+                }
+                // 检查全局容量
+                const globalUsed = getGlobalUsedBytes();
+                const globalMax = getGlobalMaxBytes();
+                if (globalUsed + req.file.size > globalMax) {
+                    throw new Error('普通用户上传总容量已达上限，无法继续上传');
+                }
+            }
 
-        db.prepare(`INSERT INTO user_traffic (user_id, type, bytes, path) VALUES (?, 'upload', ?, ?)`).run(userId, req.file.size, req.file.originalname);
+            const fileUrl = `/uploads/public_files/${req.file.filename}`;
+            db.prepare(`INSERT INTO file_nodes (name, parentId, isFolder, fileUrl, fileType, fileSize, originalName, uploaderId, uploaderName, createdAt, updatedAt)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`).run(
+                req.file.originalname, targetParentId, 0, fileUrl, req.file.mimetype, req.file.size, req.file.originalname, userId, user.username);
 
-        if (!isAdmin) {
-            updateGlobalUsedBytesAtomically(req.file.size);
-        }
+            db.prepare(`INSERT INTO user_traffic (user_id, type, bytes, path) VALUES (?, 'upload', ?, ?)`).run(userId, req.file.size, req.file.originalname);
 
-        logToFile(`[网盘上传] 用户 ${user.username} 上传文件: ${req.file.originalname} (${req.file.size} bytes)`);
+            if (!isAdmin) {
+                updateGlobalUsedBytesAtomically(req.file.size);
+            }
+
+            logToFile(`[网盘上传] 用户 ${user.username} 上传文件: ${req.file.originalname} (${req.file.size} bytes)`);
+        });
+        
         res.json({ success: true });
     } catch (err) {
+        // 上传失败，删除已上传的文件
+        try { fsSync.unlinkSync(req.file.path); } catch(e) {}
+        if (err.message.includes('容量')) {
+            return res.status(413).json({ success: false, message: err.message });
+        }
         console.error(err);
         res.status(500).json({ success: false, message: '服务器错误' });
     }
@@ -278,7 +318,7 @@ router.put('/api/file/rename/:id', isLoggedIn, checkFilesUploadBan, checkFileAcc
     }
 });
 
-// 删除文件/文件夹（原子更新全局容量）
+// 删除文件/文件夹
 router.delete('/api/file/:id', isLoggedIn, checkFilesUploadBan, checkFileAccess, async (req, res) => {
     const id = req.params.id;
     try {
@@ -329,7 +369,7 @@ router.delete('/api/file/:id', isLoggedIn, checkFilesUploadBan, checkFileAccess,
     }
 });
 
-// 下载/预览文件（路径沙箱 + 实时流量）
+// 下载/预览文件
 router.get('/api/file/download/:id', isLoggedIn, checkFilesDownloadBan, checkFileAccess, async (req, res) => {
     const id = req.params.id;
     const isPreview = req.query.preview === 'true';
@@ -384,7 +424,7 @@ router.post('/api/file/star/:id', isLoggedIn, checkFilesUploadBan, checkFileAcce
     }
 });
 
-// 批量删除（原子更新全局容量）
+// 批量删除
 router.post('/api/file/batch-delete', isLoggedIn, checkFilesUploadBan, checkFileAccess, async (req, res) => {
     const { ids } = req.body;
     if (!ids || !ids.length) return res.status(400).json({ success: false });

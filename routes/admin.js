@@ -2,8 +2,10 @@
 const express = require('express');
 const router = express.Router();
 const fs = require('fs').promises;
+const fsSync = require('fs');
 const path = require('path');
 const db = require('../db/connection');
+const notesDb = require('../db/notesConnection');
 const { isAdmin } = require('../middleware/admin');
 const { logToFile } = require('../utils/logger');
 const { DEFAULT_AVATAR_URL } = require('../config');
@@ -16,8 +18,38 @@ const ALLOWED_TABLES = [
     'users', 'messages', 'private_messages', 'message_reads', 'announcements',
     'file_nodes', 'notes', 'note_attachments', 'user_sessions', 'user_traffic',
     'user_bans', 'email_blacklist', 'system_config', 'agreement_version', 'report_config',
-    'chat_groups', 'group_members'
+    'chat_groups', 'group_members', 'group_ban_list', 'group_join_requests'
 ];
+
+console.log('✅ routes/admin.js 已加载');
+
+// ========== 辅助函数：清理用户私聊房间 ==========
+function cleanupUserPrivateRooms(io, userId) {
+    try {
+        // 获取用户的所有私聊房间
+        const rooms = db.prepare(`
+            SELECT DISTINCT 
+                CASE WHEN from_user = ? THEN to_user ELSE from_user END as otherUserId
+            FROM private_messages 
+            WHERE from_user = ? OR to_user = ?
+        `).all(userId, userId, userId);
+        
+        for (const room of rooms) {
+            const roomId = [userId, room.otherUserId].sort().join('-');
+            const sockets = onlineUsers.get(userId)?.sockets || [];
+            for (const socketId of sockets) {
+                const socket = io?.sockets.sockets.get(socketId);
+                if (socket) {
+                    socket.leave(`private:${roomId}`);
+                    socket.emit('system message', '您已被管理员踢出，所有私聊连接已断开');
+                }
+            }
+        }
+        console.log(`[管理员踢人] 已清理用户 ${userId} 的私聊房间`);
+    } catch (err) {
+        console.error('[管理员踢人] 清理私聊房间失败:', err);
+    }
+}
 
 // ========== 用户管理 ==========
 router.get('/api/admin/users', isAdmin, (req, res) => {
@@ -33,6 +65,9 @@ router.post('/api/admin/kick', isAdmin, (req, res) => {
     const info = onlineUsers.get(Number(userId));
     if (info) {
         const io = getIO();
+        // 清理私聊房间
+        cleanupUserPrivateRooms(io, Number(userId));
+        
         for (const socketId of info.sockets) {
             const targetSocket = io?.sockets.sockets.get(socketId);
             if (targetSocket) {
@@ -155,7 +190,6 @@ router.get('/api/admin/global-storage', isAdmin, (req, res) => {
 });
 
 // ========== 邮件公告 ==========
-// 发送邮件公告（支持批量发送，每3秒一封，显示进度）
 router.post('/api/admin/send-email-announcement', isAdmin, async (req, res) => {
     const { target, subject, message, userIds } = req.body;
     if (!subject || !message) {
@@ -167,19 +201,16 @@ router.post('/api/admin/send-email-announcement', isAdmin, async (req, res) => {
         let userList = [];
 
         if (target === 'all') {
-            // 获取所有有邮箱且接收邮件公告的用户
             const users = db.prepare('SELECT userId, username, email FROM users WHERE email IS NOT NULL AND email != "" AND receive_email_announcements = 1').all();
             emailList = users.map(u => ({ email: u.email, userId: u.userId, username: u.username }));
             userList = users;
         } else if (target === 'users' && userIds && userIds.length > 0) {
-            // 发送给指定的用户（已在网站注册）
             const placeholders = userIds.map(() => '?').join(',');
             const sql = `SELECT userId, username, email FROM users WHERE userId IN (${placeholders}) AND email IS NOT NULL AND email != "" AND receive_email_announcements = 1`;
             const users = db.prepare(sql).all(...userIds);
             emailList = users.map(u => ({ email: u.email, userId: u.userId, username: u.username }));
             userList = users;
         } else if (target && target.includes('@')) {
-            // 发送给单个邮箱（兼容旧方式）
             emailList = [{ email: target, userId: null, username: null }];
         } else {
             return res.status(400).json({ success: false, message: '目标格式错误' });
@@ -189,7 +220,6 @@ router.post('/api/admin/send-email-announcement', isAdmin, async (req, res) => {
             return res.status(400).json({ success: false, message: '没有找到符合条件的收件人' });
         }
 
-        // 返回总数量，前端显示进度
         res.json({
             success: true,
             total: emailList.length,
@@ -197,10 +227,10 @@ router.post('/api/admin/send-email-announcement', isAdmin, async (req, res) => {
             emails: emailList.map(e => e.email)
         });
 
-        // 异步发送邮件（每3秒一封）
         (async function sendEmails() {
             let successCount = 0;
             let failCount = 0;
+            let failedEmails = [];
             const io = getIO();
 
             for (let i = 0; i < emailList.length; i++) {
@@ -215,10 +245,10 @@ router.post('/api/admin/send-email-announcement', isAdmin, async (req, res) => {
                     logToFile(`[邮件公告] 已发送至 ${email} (${i + 1}/${emailList.length})`);
                 } catch (err) {
                     failCount++;
+                    failedEmails.push(email);
                     console.error(`[邮件公告] 发送失败 ${email}:`, err);
                 }
 
-                // 发送进度更新到 WebSocket（如果管理员在线）
                 if (io) {
                     io.to('admin').emit('email_progress', {
                         sent: i + 1,
@@ -229,9 +259,8 @@ router.post('/api/admin/send-email-announcement', isAdmin, async (req, res) => {
                     });
                 }
 
-                // 每3秒发送一封（除了最后一封）
                 if (i < emailList.length - 1) {
-                    await new Promise(resolve => setTimeout(resolve, 3000));
+                    await new Promise(resolve => setTimeout(resolve, 10000));
                 }
             }
 
@@ -240,7 +269,8 @@ router.post('/api/admin/send-email-announcement', isAdmin, async (req, res) => {
                 io.to('admin').emit('email_complete', {
                     success: successCount,
                     fail: failCount,
-                    total: emailList.length
+                    total: emailList.length,
+                    failedEmails: failedEmails
                 });
             }
         })();
@@ -328,10 +358,13 @@ router.delete('/api/admin/email-blacklist/:email', isAdmin, (req, res) => {
 });
 
 // ========== 文件清理工具 ==========
+
+// 扫描
 router.get('/api/admin/scan-files', isAdmin, async (req, res) => {
     const uploadDir = path.join(__dirname, '../uploads');
     const results = { orphanFiles: [], missingFiles: [], totalLocal: 0, totalDb: 0 };
     const localFiles = [];
+    
     async function scanDir(dir, basePath = '') {
         try {
             const items = await fs.readdir(dir, { withFileTypes: true });
@@ -343,38 +376,62 @@ router.get('/api/admin/scan-files', isAdmin, async (req, res) => {
                     await scanDir(fullPath, relativePath);
                 } else {
                     const stat = await fs.stat(fullPath);
-                    localFiles.push({ fullPath, relativePath: `/uploads/${relativePath}`, size: stat.size, mtime: stat.mtime });
+                    localFiles.push({ 
+                        fullPath, 
+                        relativePath: `/uploads/${relativePath}`, 
+                        size: stat.size, 
+                        mtime: stat.mtime 
+                    });
                 }
             }
         } catch (err) { console.error('扫描目录失败:', err); }
     }
     await scanDir(uploadDir);
     results.totalLocal = localFiles.length;
+
+    // 构建数据库文件映射
     const dbFilesMap = new Map();
+
     const nodes = db.prepare('SELECT id, fileUrl FROM file_nodes WHERE fileUrl IS NOT NULL').all();
     for (const node of nodes) dbFilesMap.set(node.fileUrl, { table: 'file_nodes', id: node.id });
     const messages = db.prepare('SELECT id, fileUrl FROM messages WHERE fileUrl IS NOT NULL').all();
     for (const msg of messages) dbFilesMap.set(msg.fileUrl, { table: 'messages', id: msg.id });
     const users = db.prepare('SELECT userId, avatarUrl FROM users WHERE avatarUrl IS NOT NULL').all();
     for (const user of users) dbFilesMap.set(user.avatarUrl, { table: 'users', id: user.userId });
-    const noteAttachments = db.prepare('SELECT id, fileUrl FROM note_attachments WHERE fileUrl IS NOT NULL').all();
-    for (const att of noteAttachments) {
-        dbFilesMap.set(att.fileUrl, { table: 'note_attachments', id: att.id });
+
+    try {
+        const noteAttachments = notesDb.prepare('SELECT id, fileUrl FROM note_attachments WHERE fileUrl IS NOT NULL').all();
+        for (const att of noteAttachments) {
+            dbFilesMap.set(att.fileUrl, { table: 'note_attachments', id: att.id });
+        }
+    } catch (err) {
+        console.error('读取 notes.db 失败:', err);
     }
+
     results.totalDb = dbFilesMap.size;
+
     for (const local of localFiles) {
         if (!dbFilesMap.has(local.relativePath)) {
             if (local.relativePath.startsWith('/uploads/avatars/')) continue;
             results.orphanFiles.push(local);
         }
     }
+
     for (const [dbUrl, info] of dbFilesMap.entries()) {
         if (dbUrl.startsWith('http://') || dbUrl.startsWith('https://')) continue;
         const localPath = path.join(__dirname, '../', dbUrl);
-        try { await fs.access(localPath); } catch (err) {
-            results.missingFiles.push({ fileUrl: dbUrl, error: err.message, table: info.table, id: info.id });
+        try {
+            await fs.access(localPath);
+        } catch (err) {
+            results.missingFiles.push({ 
+                fileUrl: dbUrl, 
+                error: err.message, 
+                table: info.table, 
+                id: info.id 
+            });
         }
     }
+
     res.json({ success: true, results });
 });
 
@@ -382,6 +439,7 @@ router.post('/api/admin/clean-orphan-files', isAdmin, async (req, res) => {
     const { files } = req.body;
     const uploadBase = path.join(__dirname, '../uploads');
     let deleted = 0, errors = [];
+
     for (const filePath of files) {
         let safeFilePath;
         try {
@@ -402,21 +460,175 @@ router.post('/api/admin/clean-orphan-files', isAdmin, async (req, res) => {
             errors.push({ file: filePath, error: err.message });
         }
     }
+
     res.json({ success: true, deleted, errors });
 });
 
 router.post('/api/admin/delete-missing-record', isAdmin, async (req, res) => {
     const { fileUrl, table, id } = req.body;
     if (!fileUrl || !table || !id) return res.status(400).json({ success: false, message: '参数不全' });
+
     try {
-        if (table === 'file_nodes') db.prepare('DELETE FROM file_nodes WHERE id = ?').run(Number(id));
-        else if (table === 'messages') db.prepare('DELETE FROM messages WHERE id = ?').run(Number(id));
-        else if (table === 'users') db.prepare('UPDATE users SET avatarUrl = ? WHERE userId = ?').run(DEFAULT_AVATAR_URL, Number(id));
-        else if (table === 'note_attachments') db.prepare('DELETE FROM note_attachments WHERE id = ?').run(Number(id));
-        else return res.status(400).json({ success: false, message: '不支持的表' });
+        if (table === 'file_nodes') {
+            db.prepare('DELETE FROM file_nodes WHERE id = ?').run(Number(id));
+        } else if (table === 'messages') {
+            db.prepare('DELETE FROM messages WHERE id = ?').run(Number(id));
+        } else if (table === 'users') {
+            db.prepare('UPDATE users SET avatarUrl = ? WHERE userId = ?').run(DEFAULT_AVATAR_URL, Number(id));
+        } else if (table === 'note_attachments') {
+            notesDb.prepare('DELETE FROM note_attachments WHERE id = ?').run(Number(id));
+        } else {
+            return res.status(400).json({ success: false, message: '不支持的表' });
+        }
         logToFile(`[清理] 已删除缺失文件记录: ${table} ID=${id}, 路径=${fileUrl}`);
         res.json({ success: true });
     } catch (err) {
+        console.error('删除缺失记录失败:', err);
+        res.status(500).json({ success: false, message: err.message });
+    }
+});
+
+// ========== 文件清理申请管理 ==========
+const CLEAN_REQUESTS_DIR = path.join(__dirname, '../clean_requests');
+if (!fsSync.existsSync(CLEAN_REQUESTS_DIR)) {
+    fsSync.mkdirSync(CLEAN_REQUESTS_DIR, { recursive: true });
+}
+
+router.post('/api/admin/clean-request', isAdmin, (req, res) => {
+    const { type, items } = req.body;
+    if (!type || !items || !items.length) {
+        return res.status(400).json({ success: false, message: '缺少参数' });
+    }
+
+    const now = new Date();
+    const timestamp = `${now.getFullYear()}${String(now.getMonth()+1).padStart(2,'0')}${String(now.getDate()).padStart(2,'0')}_${String(now.getHours()).padStart(2,'0')}${String(now.getMinutes()).padStart(2,'0')}${String(now.getSeconds()).padStart(2,'0')}`;
+    const filename = `clean_${type}_${timestamp}.txt`;
+    const filePath = path.join(CLEAN_REQUESTS_DIR, filename);
+
+    let content = `时间: ${now.toLocaleString()}\n操作类型: ${type === 'orphan' ? '删除孤儿文件' : '删除缺失记录'}\n确定删除: 否\n\n`;
+    if (type === 'orphan') {
+        content += `待删除文件:\n`;
+        for (const item of items) {
+            content += `  - ${item.relativePath} (${item.size} bytes)\n`;
+        }
+    } else {
+        content += `待删除记录:\n`;
+        for (const item of items) {
+            content += `  - 表: ${item.table}, ID: ${item.id}, 路径: ${item.fileUrl}\n`;
+        }
+    }
+    content += `\n请确认后，将 "确定删除: 否" 改为 "确定删除: 是" 以执行。`;
+
+    fsSync.writeFileSync(filePath, content, 'utf8');
+    logToFile(`[清理申请] 管理员 ${req.session.userId} 创建申请文件 ${filename}`);
+    res.json({ success: true, message: '清理申请已创建，请等待管理员审核。', filename });
+});
+
+router.get('/api/admin/clean-requests', isAdmin, (req, res) => {
+    try {
+        const files = fsSync.readdirSync(CLEAN_REQUESTS_DIR);
+        const list = files.filter(f => f.startsWith('clean_') && f.endsWith('.txt')).map(f => {
+            const filePath = path.join(CLEAN_REQUESTS_DIR, f);
+            const content = fsSync.readFileSync(filePath, 'utf8');
+            const lines = content.split('\n');
+            const statusLine = lines.find(l => l.includes('确定删除:'));
+            const isApproved = statusLine ? statusLine.includes('是') : false;
+            const typeLine = lines.find(l => l.includes('操作类型:'));
+            const type = typeLine ? typeLine.replace('操作类型:', '').trim() : '未知';
+            return { filename: f, isApproved, type, content };
+        });
+        res.json({ success: true, list });
+    } catch (err) {
+        console.error('获取清理申请文件列表失败:', err);
+        res.status(500).json({ success: false, message: err.message });
+    }
+});
+
+router.post('/api/admin/apply-clean-requests', isAdmin, async (req, res) => {
+    try {
+        const files = fsSync.readdirSync(CLEAN_REQUESTS_DIR);
+        let executed = 0, failed = 0, results = [];
+        for (const f of files) {
+            if (!f.startsWith('clean_') || !f.endsWith('.txt')) continue;
+            const filePath = path.join(CLEAN_REQUESTS_DIR, f);
+            const content = fsSync.readFileSync(filePath, 'utf8');
+            const lines = content.split('\n');
+            const statusLine = lines.find(l => l.includes('确定删除:'));
+            if (!statusLine || !statusLine.includes('是')) continue;
+            const typeLine = lines.find(l => l.includes('操作类型:'));
+            const type = typeLine ? typeLine.replace('操作类型:', '').trim() : '';
+            if (!type) continue;
+
+            let success = true;
+            let errorMsg = '';
+            try {
+                if (type === '删除孤儿文件') {
+                    const pathLines = content.match(/- .*?\((.*?)\)/g);
+                    if (pathLines) {
+                        for (const line of pathLines) {
+                            const match = line.match(/- (.*?) \(/);
+                            if (match) {
+                                const relativePath = match[1].trim();
+                                const uploadBase = path.join(__dirname, '../uploads');
+                                const safeFilePath = safePath(uploadBase, relativePath);
+                                if (safeFilePath.startsWith(path.join(uploadBase, 'avatars'))) {
+                                    continue;
+                                }
+                                try {
+                                    await fs.unlink(safeFilePath);
+                                    logToFile(`[清理申请] 已删除孤儿文件: ${relativePath}`);
+                                } catch (err) {
+                                    logToFile(`[清理申请] 删除文件失败: ${relativePath}, ${err.message}`);
+                                }
+                            }
+                        }
+                    }
+                } else if (type === '删除缺失记录') {
+                    const recordLines = content.match(/- 表: (.*?), ID: (\d+), 路径: (.*?)(?:\n|$)/g);
+                    if (recordLines) {
+                        for (const line of recordLines) {
+                            const match = line.match(/- 表: (.*?), ID: (\d+), 路径: (.*?)(?:\n|$)/);
+                            if (match) {
+                                const table = match[1].trim();
+                                const id = parseInt(match[2]);
+                                const fileUrl = match[3].trim();
+                                if (table === 'file_nodes') {
+                                    db.prepare('DELETE FROM file_nodes WHERE id = ?').run(id);
+                                } else if (table === 'messages') {
+                                    db.prepare('DELETE FROM messages WHERE id = ?').run(id);
+                                } else if (table === 'users') {
+                                    db.prepare('UPDATE users SET avatarUrl = ? WHERE userId = ?').run(DEFAULT_AVATAR_URL, id);
+                                } else if (table === 'note_attachments') {
+                                    notesDb.prepare('DELETE FROM note_attachments WHERE id = ?').run(id);
+                                } else {
+                                    continue;
+                                }
+                                logToFile(`[清理申请] 已删除缺失记录: ${table} ID=${id}`);
+                            }
+                        }
+                    }
+                } else {
+                    success = false;
+                    errorMsg = '未知操作类型';
+                }
+            } catch (err) {
+                success = false;
+                errorMsg = err.message;
+            }
+
+            if (success) {
+                executed++;
+                results.push({ file: f, success: true });
+                const newName = f.replace('.txt', '_executed.txt');
+                fsSync.renameSync(filePath, path.join(CLEAN_REQUESTS_DIR, newName));
+            } else {
+                failed++;
+                results.push({ file: f, success: false, error: errorMsg });
+            }
+        }
+        res.json({ success: true, executed, failed, results });
+    } catch (err) {
+        console.error('应用清理申请失败:', err);
         res.status(500).json({ success: false, message: err.message });
     }
 });
@@ -437,6 +649,20 @@ router.get('/api/admin/db/schema', isAdmin, (req, res) => {
     try {
         const schema = db.prepare(`PRAGMA table_info(${table})`).all();
         res.json({ success: true, schema });
+    } catch (err) {
+        res.status(500).json({ success: false, message: err.message });
+    }
+});
+
+router.get('/api/admin/db/data', isAdmin, (req, res) => {
+    const { table, limit = 100 } = req.query;
+    if (!table) return res.status(400).json({ success: false });
+    if (!ALLOWED_TABLES.includes(table)) {
+        return res.status(403).json({ success: false, message: '不允许查询此表' });
+    }
+    try {
+        const rows = db.prepare(`SELECT * FROM ${table} LIMIT ?`).all(parseInt(limit));
+        res.json({ success: true, rows });
     } catch (err) {
         res.status(500).json({ success: false, message: err.message });
     }
@@ -470,16 +696,88 @@ router.post('/api/admin/db/query', isAdmin, (req, res) => {
     }
 });
 
-router.get('/api/admin/db/data', isAdmin, (req, res) => {
-    const { table, limit = 100 } = req.query;
-    if (!table) return res.status(400).json({ success: false });
-    if (!ALLOWED_TABLES.includes(table)) {
-        return res.status(403).json({ success: false, message: '不允许查询此表' });
+// ========== 数据库修改申请管理 ==========
+const MODIFY_REQUESTS_DIR = path.join(__dirname, '../modify_requests');
+if (!fsSync.existsSync(MODIFY_REQUESTS_DIR)) {
+    fsSync.mkdirSync(MODIFY_REQUESTS_DIR, { recursive: true });
+}
+
+router.post('/api/admin/db/request-modify', isAdmin, (req, res) => {
+    const { sql } = req.body;
+    if (!sql) {
+        return res.status(400).json({ success: false, message: 'SQL 语句不能为空' });
     }
+    const upperSql = sql.trim().toUpperCase();
+    if (upperSql.startsWith('DROP') || upperSql.startsWith('TRUNCATE') || upperSql.startsWith('ALTER')) {
+        return res.status(400).json({ success: false, message: '不允许执行 DROP/TRUNCATE/ALTER 操作' });
+    }
+
+    const now = new Date();
+    const timestamp = `${now.getFullYear()}${String(now.getMonth()+1).padStart(2,'0')}${String(now.getDate()).padStart(2,'0')}_${String(now.getHours()).padStart(2,'0')}${String(now.getMinutes()).padStart(2,'0')}${String(now.getSeconds()).padStart(2,'0')}`;
+    const filename = `modify_${timestamp}.txt`;
+    const filePath = path.join(MODIFY_REQUESTS_DIR, filename);
+    const content = `时间: ${now.toLocaleString()}\n申请内容: ${sql}\n确定修改: 否\n`;
+    fsSync.writeFileSync(filePath, content, 'utf8');
+    logToFile(`[数据库修改申请] 管理员 ${req.session.userId} 创建申请文件 ${filename}`);
+    res.json({ success: true, message: '申请已创建，请等待管理员审核（修改文件中的"确定修改"为"是"）。', filename });
+});
+
+router.get('/api/admin/db/modify-files', isAdmin, (req, res) => {
     try {
-        const rows = db.prepare(`SELECT * FROM ${table} LIMIT ?`).all(parseInt(limit));
-        res.json({ success: true, rows });
+        const files = fsSync.readdirSync(MODIFY_REQUESTS_DIR);
+        const list = files.filter(f => f.startsWith('modify_') && f.endsWith('.txt')).map(f => {
+            const filePath = path.join(MODIFY_REQUESTS_DIR, f);
+            const content = fsSync.readFileSync(filePath, 'utf8');
+            const lines = content.split('\n');
+            const statusLine = lines.find(l => l.includes('确定修改:'));
+            const isApproved = statusLine ? statusLine.includes('是') : false;
+            const sqlLine = lines.find(l => l.includes('申请内容:'));
+            const sql = sqlLine ? sqlLine.replace('申请内容:', '').trim() : '';
+            return { filename: f, isApproved, sql, content };
+        });
+        res.json({ success: true, list });
     } catch (err) {
+        console.error('获取修改文件列表失败:', err);
+        res.status(500).json({ success: false, message: err.message });
+    }
+});
+
+router.post('/api/admin/db/apply-modify', isAdmin, (req, res) => {
+    try {
+        const files = fsSync.readdirSync(MODIFY_REQUESTS_DIR);
+        let executed = 0, failed = 0, results = [];
+        for (const f of files) {
+            if (!f.startsWith('modify_') || !f.endsWith('.txt')) continue;
+            const filePath = path.join(MODIFY_REQUESTS_DIR, f);
+            const content = fsSync.readFileSync(filePath, 'utf8');
+            const lines = content.split('\n');
+            const statusLine = lines.find(l => l.includes('确定修改:'));
+            if (!statusLine || !statusLine.includes('是')) continue;
+            const sqlLine = lines.find(l => l.includes('申请内容:'));
+            if (!sqlLine) continue;
+            const sql = sqlLine.replace('申请内容:', '').trim();
+            try {
+                const upperSql = sql.trim().toUpperCase();
+                if (upperSql.startsWith('UPDATE') || upperSql.startsWith('INSERT') || upperSql.startsWith('DELETE')) {
+                    const result = db.prepare(sql).run();
+                    executed++;
+                    results.push({ file: f, success: true, changes: result.changes });
+                    const newName = f.replace('.txt', '_executed.txt');
+                    fsSync.renameSync(filePath, path.join(MODIFY_REQUESTS_DIR, newName));
+                    logToFile(`[数据库修改] 管理员执行修改文件 ${f}，影响 ${result.changes} 行`);
+                } else {
+                    failed++;
+                    results.push({ file: f, success: false, error: '不支持的SQL类型，只允许 UPDATE/INSERT/DELETE' });
+                }
+            } catch (err) {
+                failed++;
+                results.push({ file: f, success: false, error: err.message });
+                logToFile(`[数据库修改] 执行文件 ${f} 失败: ${err.message}`);
+            }
+        }
+        res.json({ success: true, executed, failed, results });
+    } catch (err) {
+        console.error('应用修改失败:', err);
         res.status(500).json({ success: false, message: err.message });
     }
 });
@@ -509,6 +807,11 @@ router.post('/api/admin/restart', isAdmin, (req, res) => {
         console.log('Graceful shutdown requested');
         process.exit(0);
     }
+});
+
+// ========== 测试路由 ==========
+router.get('/api/admin/test', isAdmin, (req, res) => {
+    res.json({ success: true, message: 'Admin route works!' });
 });
 
 module.exports = router;

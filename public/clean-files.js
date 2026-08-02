@@ -1,9 +1,7 @@
 // public/clean-files.js
-// ============================================================
-// 完全自包含 - 不依赖外部加载顺序
-// ============================================================
+let scanResults = null;
 
-// ========== 确保全局函数可用（内联 Fallback） ==========
+// ========== 确保全局函数可用 ==========
 (function ensureGlobals() {
     if (typeof window.escapeHtml !== 'function') {
         window.escapeHtml = function(text) {
@@ -14,12 +12,13 @@
     }
     if (typeof window.apiRequest !== 'function') {
         window.apiRequest = function(url, method, body) {
-            return fetch(url, {
+            var options = {
                 method: method,
-                headers: { 'Content-Type': 'application/json' },
                 credentials: 'include',
-                body: body ? JSON.stringify(body) : undefined
-            }).then(function(res) { return res.json(); });
+                headers: { 'Content-Type': 'application/json' }
+            };
+            if (body) options.body = JSON.stringify(body);
+            return fetch(url, options).then(function(res) { return res.json(); });
         };
     }
     if (typeof window.formatFileSize !== 'function') {
@@ -31,25 +30,25 @@
             return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
         };
     }
-    if (typeof window.formatTime !== 'function') {
-        window.formatTime = function(timestamp) {
-            var date = new Date(timestamp);
-            var now = new Date();
-            var diff = now - date;
-            if (diff < 60000) return '刚刚';
-            if (diff < 3600000) return Math.floor(diff / 60000) + '分钟前';
-            if (diff < 86400000) return Math.floor(diff / 3600000) + '小时前';
-            return date.toLocaleDateString();
-        };
-    }
 })();
 
-// ========== 主要逻辑 ==========
-var scanResults = null;
+// ========== 标签页切换 ==========
+document.querySelectorAll('.tab-btn').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+        var tab = btn.dataset.tab;
+        document.querySelectorAll('.tab-btn').forEach(function(b) { b.classList.remove('active'); });
+        btn.classList.add('active');
+        document.querySelectorAll('.tab-content').forEach(function(tc) { tc.classList.remove('active'); });
+        document.getElementById(tab + 'Tab').classList.add('active');
+        if (tab === 'requests') {
+            loadRequests();
+        }
+    });
+});
 
+// ========== 扫描 ==========
 async function loadScan() {
     try {
-        // 再次确保 apiRequest 可用
         if (typeof window.apiRequest !== 'function') {
             console.warn('[clean-files] apiRequest 不可用，等待重试...');
             await new Promise(function(resolve) { setTimeout(resolve, 300); });
@@ -57,8 +56,6 @@ async function loadScan() {
                 throw new Error('apiRequest 函数不可用，请刷新页面重试');
             }
         }
-        
-        // 注意：window.apiRequest 已经返回解析后的 JSON 对象，不需要再 .json()
         var data = await window.apiRequest('/api/admin/scan-files', 'GET');
         if (data.success) {
             scanResults = data.results;
@@ -97,27 +94,19 @@ function renderOrphanFiles() {
         var file = scanResults.orphanFiles[i];
         html += '<div class="file-item">' +
             '<span>' + window.escapeHtml(file.relativePath) + ' (' + window.formatFileSize(file.size) + ')</span>' +
-            '<button class="delete-btn" data-path="' + window.escapeHtml(file.relativePath) + '">删除</button>' +
+            '<div>' +
+            '<button class="request-btn" data-path="' + window.escapeHtml(file.relativePath) + '" data-size="' + file.size + '">📝 申请删除</button>' +
+            '</div>' +
             '</div>';
     }
     container.innerHTML = html;
-    
-    document.querySelectorAll('.delete-btn').forEach(function(btn) {
+    // 绑定申请按钮事件
+    document.querySelectorAll('#orphanFilesList .request-btn').forEach(function(btn) {
         btn.addEventListener('click', function() {
             var path = btn.dataset.path;
-            if (confirm('确定删除文件 ' + path + ' 吗？')) {
-                window.apiRequest('/api/admin/clean-orphan-files', 'POST', { files: [path] })
-                    .then(function(res) {
-                        if (res.success) {
-                            alert('已删除 ' + res.deleted + ' 个文件');
-                            loadScan();
-                        } else {
-                            alert('删除失败');
-                        }
-                    })
-                    .catch(function(err) {
-                        alert('删除失败: ' + err.message);
-                    });
+            var size = btn.dataset.size;
+            if (confirm('申请删除孤儿文件：' + path + ' (确定后需等待管理员审批)？')) {
+                requestClean('orphan', [{ relativePath: path, size: size }]);
             }
         });
     });
@@ -135,60 +124,128 @@ function renderMissingFiles() {
         var file = scanResults.missingFiles[i];
         html += '<div class="file-item">' +
             '<span>' + window.escapeHtml(file.fileUrl) + ' - ' + window.escapeHtml(file.error) + '</span>' +
-            '<button class="delete-record-btn" data-url="' + window.escapeHtml(file.fileUrl) + '" data-table="' + window.escapeHtml(file.table) + '" data-id="' + file.id + '">删除记录</button>' +
+            '<div>' +
+            '<button class="request-missing-btn" data-table="' + file.table + '" data-id="' + file.id + '" data-url="' + window.escapeHtml(file.fileUrl) + '">📝 申请删除记录</button>' +
+            '</div>' +
             '</div>';
     }
     container.innerHTML = html;
-    
-    document.querySelectorAll('.delete-record-btn').forEach(function(btn) {
+    document.querySelectorAll('#missingFilesList .request-missing-btn').forEach(function(btn) {
         btn.addEventListener('click', function() {
-            var url = btn.dataset.url;
             var table = btn.dataset.table;
             var id = btn.dataset.id;
-            if (confirm('确定删除数据库中的记录吗？文件已不存在，仅删除记录。\n路径: ' + url)) {
-                window.apiRequest('/api/admin/delete-missing-record', 'POST', {
-                    fileUrl: url,
-                    table: table,
-                    id: id
-                }).then(function(res) {
-                    if (res.success) {
-                        alert('记录已删除');
-                        loadScan();
-                    } else {
-                        alert('删除失败: ' + res.message);
-                    }
-                }).catch(function(err) {
-                    alert('删除失败: ' + err.message);
-                });
+            var url = btn.dataset.url;
+            if (confirm('申请删除缺失记录：表 ' + table + ', ID ' + id + ' (确定后需等待管理员审批)？')) {
+                requestClean('missing', [{ table: table, id: parseInt(id), fileUrl: url }]);
             }
         });
     });
 }
 
-// 删除所有孤儿文件
-document.getElementById('deleteAllOrphansBtn')?.addEventListener('click', function() {
+// ========== 申请清理 ==========
+async function requestClean(type, items) {
+    try {
+        var res = await window.apiRequest('/api/admin/clean-request', 'POST', { type: type, items: items });
+        if (res.success) {
+            alert('申请已提交，文件已生成：' + res.filename + '\n请手动编辑文件将“确定删除”改为“是”后，再点击“应用已批准的清理”。');
+        } else {
+            alert('申请失败：' + res.message);
+        }
+    } catch (err) {
+        alert('申请失败：' + err.message);
+    }
+}
+
+// ========== 批量申请 ==========
+document.getElementById('requestAllOrphansBtn')?.addEventListener('click', function() {
     if (!scanResults || scanResults.orphanFiles.length === 0) {
-        alert('没有孤儿文件可删除');
+        alert('没有孤儿文件可申请删除');
         return;
     }
-    var paths = scanResults.orphanFiles.map(function(f) { return f.relativePath; });
-    if (confirm('确定删除全部 ' + paths.length + ' 个孤儿文件吗？不可恢复！')) {
-        window.apiRequest('/api/admin/clean-orphan-files', 'POST', { files: paths })
-            .then(function(res) {
-                if (res.success) {
-                    alert('已删除 ' + res.deleted + ' 个文件，失败 ' + res.errors.length + ' 个');
-                    loadScan();
-                } else {
-                    alert('操作失败');
-                }
-            })
-            .catch(function(err) {
-                alert('操作失败: ' + err.message);
-            });
+    if (confirm('确定要申请删除全部 ' + scanResults.orphanFiles.length + ' 个孤儿文件吗？')) {
+        var items = scanResults.orphanFiles.map(function(f) {
+            return { relativePath: f.relativePath, size: f.size };
+        });
+        requestClean('orphan', items);
     }
 });
 
-// ========== 页面初始化 ==========
+document.getElementById('requestAllMissingBtn')?.addEventListener('click', function() {
+    if (!scanResults || scanResults.missingFiles.length === 0) {
+        alert('没有缺失记录可申请删除');
+        return;
+    }
+    if (confirm('确定要申请删除全部 ' + scanResults.missingFiles.length + ' 条缺失记录吗？')) {
+        var items = scanResults.missingFiles.map(function(f) {
+            return { table: f.table, id: f.id, fileUrl: f.fileUrl };
+        });
+        requestClean('missing', items);
+    }
+});
+
+// ========== 申请列表管理 ==========
+async function loadRequests() {
+    var container = document.getElementById('requestList');
+    container.innerHTML = '加载中...';
+    try {
+        var res = await window.apiRequest('/api/admin/clean-requests', 'GET');
+        if (res.success) {
+            if (res.list.length === 0) {
+                container.innerHTML = '<div style="padding:12px; text-align:center; color:#999;">暂无清理申请</div>';
+                return;
+            }
+            var html = '';
+            for (var i = 0; i < res.list.length; i++) {
+                var item = res.list[i];
+                var statusText = item.isApproved ? '已批准' : '待审批';
+                var badgeClass = item.isApproved ? 'badge-approved' : 'badge-pending';
+                if (item.filename.includes('_executed')) {
+                    statusText = '已执行';
+                    badgeClass = 'badge-executed';
+                }
+                html += '<div class="request-item">' +
+                    '<span>' + window.escapeHtml(item.filename) + '</span>' +
+                    '<span><span class="' + badgeClass + '">' + statusText + '</span></span>' +
+                    '<span style="font-size:12px;color:#666;">' + window.escapeHtml(item.type) + '</span>' +
+                    '</div>';
+            }
+            container.innerHTML = html;
+        } else {
+            container.innerHTML = '<div style="color:red;">加载失败：' + window.escapeHtml(res.message) + '</div>';
+        }
+    } catch (err) {
+        container.innerHTML = '<div style="color:red;">加载失败</div>';
+    }
+}
+
+document.getElementById('refreshRequestsBtn')?.addEventListener('click', loadRequests);
+
+document.getElementById('applyApprovedBtn')?.addEventListener('click', async function() {
+    if (!confirm('确定要执行所有已批准的清理操作吗？此操作不可撤销！')) return;
+    var resultDiv = document.getElementById('applyResult');
+    resultDiv.innerHTML = '正在执行...';
+    try {
+        var res = await window.apiRequest('/api/admin/apply-clean-requests', 'POST');
+        if (res.success) {
+            var msg = '成功执行 ' + res.executed + ' 个，失败 ' + res.failed + ' 个。';
+            if (res.results && res.results.length) {
+                msg += '<br>详情：<br>';
+                res.results.forEach(function(r) {
+                    msg += (r.success ? '✅ ' : '❌ ') + r.file + (r.error ? ' - ' + r.error : '') + '<br>';
+                });
+            }
+            resultDiv.innerHTML = '<div style="color:' + (res.failed > 0 ? 'orange' : 'green') + ';">' + msg + '</div>';
+            loadRequests();
+            loadScan(); // 刷新扫描结果
+        } else {
+            resultDiv.innerHTML = '<span style="color:red;">执行失败：' + res.message + '</span>';
+        }
+    } catch (err) {
+        resultDiv.innerHTML = '<span style="color:red;">执行失败：' + err.message + '</span>';
+    }
+});
+
+// ========== 初始化 ==========
 (function init() {
     fetch('/api/me', { credentials: 'include' })
         .then(function(res) { return res.json(); })
@@ -198,9 +255,9 @@ document.getElementById('deleteAllOrphansBtn')?.addEventListener('click', functi
                 window.location.href = '/';
                 return;
             }
-            // 延迟加载，确保所有依赖就绪
             setTimeout(function() {
                 loadScan();
+                // 默认不加载申请列表，切换到申请标签时加载
             }, 200);
         })
         .catch(function(err) {

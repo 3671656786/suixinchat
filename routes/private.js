@@ -4,6 +4,7 @@ const router = express.Router();
 const multer = require('multer');
 const db = require('../db/connection');
 const { isLoggedIn } = require('../middleware/auth');
+const { checkChatBan } = require('../middleware/banCheck');
 const { validateFileType } = require('../utils/fileValidator');
 const { logToFile } = require('../utils/logger');
 const { storage, fileFilter } = require('../config/multer');
@@ -13,8 +14,8 @@ const { safePath } = require('../utils/safePath');
 const fs = require('fs');
 const path = require('path');
 
-// 私聊文件上传
-router.post('/api/private/upload', isLoggedIn, (req, res, next) => {
+// ========== 修复 N1: 私聊文件上传添加封禁检查 ==========
+router.post('/api/private/upload', isLoggedIn, checkChatBan, (req, res, next) => {
     const user = db.prepare('SELECT role FROM users WHERE userId = ?').get(req.userId);
     const isAdmin = user && user.role === 'admin';
     const limit = isAdmin ? FILE_SIZE_LIMITS.admin : FILE_SIZE_LIMITS.user;
@@ -41,7 +42,7 @@ router.post('/api/private/upload', isLoggedIn, (req, res, next) => {
     res.json({ success: true, fileUrl: `/uploads/private_files/${req.file.filename}`, fileName: req.file.originalname, fileType: req.file.mimetype });
 });
 
-// #4-中 修复：私聊文件下载使用 safePath
+// ========== 私聊文件下载（已使用safePath） ==========
 router.get('/api/private/download/:id', isLoggedIn, async (req, res) => {
     const msgId = req.params.id;
     const userId = req.userId;
@@ -49,7 +50,6 @@ router.get('/api/private/download/:id', isLoggedIn, async (req, res) => {
     if (!msg || !msg.fileUrl) {
         return res.status(404).json({ success: false, message: '文件不存在或无权访问' });
     }
-    // #4-中 修复：使用 safePath 验证路径安全性
     let safeFilePath;
     try {
         const uploadBase = path.join(__dirname, '..');
@@ -76,7 +76,7 @@ router.get('/api/private/download/:id', isLoggedIn, async (req, res) => {
     }
 });
 
-// 获取与指定用户的私聊记录
+// ========== 获取与指定用户的私聊记录 ==========
 router.get('/api/private/messages/:userId', isLoggedIn, (req, res) => {
     const currentUserId = req.userId;
     const targetUserId = parseInt(req.params.userId);
@@ -104,7 +104,7 @@ router.get('/api/private/messages/:userId', isLoggedIn, (req, res) => {
     }
 });
 
-// 获取私聊列表（所有有过私聊的用户及未读数）
+// ========== 获取私聊列表 ==========
 router.get('/api/private/list', isLoggedIn, (req, res) => {
     const currentUserId = req.userId;
     try {

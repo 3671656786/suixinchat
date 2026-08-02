@@ -9,6 +9,14 @@ chat.db
 chat.db-journal
 chat.db-wal
 chat.db-shm
+notes.db
+notes.db-journal
+notes.db-wal
+notes.db-shm
+updates.db
+updates.db-journal
+updates.db-wal
+updates.db-shm
 
 # 环境变量（包含敏感信息）
 .env
@@ -37,6 +45,9 @@ Thumbs.db
 # PM2 日志
 .pm2/
 
-
+# 临时文件（根据你的项目）
 cmd.bat
 111.txt
+agreement.txt
+modify_requests/
+clean_requests/

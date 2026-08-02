@@ -1,7 +1,7 @@
 // socket/chatHandler.js
 const path = require('path');
 const fs = require('fs').promises;
-const { replaceEmojis, escapeHtml } = require('../utils/helpers');
+const { replaceEmojis } = require('../utils/helpers');
 const { RECALLED_DIR } = require('../config');
 const db = require('../db/connection');
 const { safePath } = require('../utils/safePath');
@@ -13,7 +13,7 @@ const userLastMessageTime = new Map();
 
 function updateGlobalUsedBytesAtomically(delta) {
     const deltaInt = parseInt(delta);
-    const stmt = db.prepare(`UPDATE system_config SET value = CAST(value AS INTEGER) + ?, updated_at = CURRENT_TIMESTAMP WHERE key = ?`);
+    const stmt = db.prepare(`UPDATE system_config SET value = CAST(value AS INTEGER) + ?, updated_at = datetime('now') WHERE key = ?`);
     stmt.run(deltaInt, 'total_upload_bytes');
 }
 
@@ -39,14 +39,14 @@ function checkRateLimit(userId) {
 module.exports = (socket, io, onlineUsers, db, logToFile) => {
     const userId = socket.user.userId;
     const user = socket.user;
-    
+
     socket.on('join chat', () => {
         socket.join('chatroom');
         const recentMessages = db.prepare('SELECT * FROM messages WHERE groupId = 0 ORDER BY timestamp ASC LIMIT 50').all();
         socket.emit('history messages', recentMessages);
         socket.broadcast.to('chatroom').emit('system message', `${user.username} 进入了聊天室`);
     });
-    
+
     socket.on('chat message', async (rawContent, replyToId = null) => {
         if (!socket.rooms.has('chatroom')) return;
         if (isChatBanned(userId)) {
@@ -61,7 +61,7 @@ module.exports = (socket, io, onlineUsers, db, logToFile) => {
             socket.emit('system message', '消息发送过于频繁，请稍后再试');
             return;
         }
-        
+
         const content = replaceEmojis(rawContent);
         const timestamp = new Date().toISOString();
         let replyToUsername = null, replyToContent = null;
@@ -76,7 +76,7 @@ module.exports = (socket, io, onlineUsers, db, logToFile) => {
             `INSERT INTO messages (userId, username, avatarUrl, content, timestamp, replyToId, replyToUsername, replyToContent, groupId) 
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
         ).run(user.userId, user.username, user.avatarUrl, content, timestamp, replyToId, replyToUsername, replyToContent, 0);
-        
+
         const newMsg = {
             id: result.lastInsertRowid,
             userId: user.userId,
@@ -90,7 +90,7 @@ module.exports = (socket, io, onlineUsers, db, logToFile) => {
         io.to('chatroom').emit('new message', newMsg);
         db.prepare('INSERT OR IGNORE INTO message_reads (message_id, user_id) VALUES (?, ?)').run(result.lastInsertRowid, userId);
     });
-    
+
     socket.on('file message', async ({ fileUrl, fileName, fileType }) => {
         if (!socket.rooms.has('chatroom')) return;
         if (isChatBanned(userId)) {
@@ -101,7 +101,7 @@ module.exports = (socket, io, onlineUsers, db, logToFile) => {
             socket.emit('system message', '消息发送过于频繁，请稍后再试');
             return;
         }
-        
+
         const timestamp = new Date().toISOString();
         const result = db.prepare(`INSERT INTO messages (userId, username, avatarUrl, fileUrl, fileName, fileType, timestamp, groupId) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
             .run(user.userId, user.username, user.avatarUrl, fileUrl, fileName, fileType, timestamp, 0);
@@ -119,7 +119,7 @@ module.exports = (socket, io, onlineUsers, db, logToFile) => {
         io.to('chatroom').emit('new message', newMsg);
         db.prepare('INSERT OR IGNORE INTO message_reads (message_id, user_id) VALUES (?, ?)').run(result.lastInsertRowid, userId);
     });
-    
+
     socket.on('recall message', async (messageId) => {
         if (!socket.rooms.has('chatroom')) return;
         const msg = db.prepare('SELECT * FROM messages WHERE id = ?').get(Number(messageId));
@@ -143,7 +143,7 @@ module.exports = (socket, io, onlineUsers, db, logToFile) => {
                 const newFilePath = path.join(RECALLED_DIR, `${recallTime}_${userId}_${originalFileName}`);
                 await fs.rename(originalSafePath, newFilePath);
                 logToFile(`[撤回] ${user.username} 撤回消息 ${messageId}，文件移至 ${newFilePath}`);
-                
+
                 const uploader = db.prepare('SELECT role FROM users WHERE userId = ?').get(msg.userId);
                 if (uploader && uploader.role === 'user') {
                     updateGlobalUsedBytesAtomically(-(msg.fileSize || 0));
@@ -154,7 +154,7 @@ module.exports = (socket, io, onlineUsers, db, logToFile) => {
         db.prepare('DELETE FROM messages WHERE id = ?').run(Number(messageId));
         io.to('chatroom').emit('message recalled', { messageId });
     });
-    
+
     socket.on('mark messages read', (messageIds) => {
         const stmt = db.prepare('INSERT OR IGNORE INTO message_reads (message_id, user_id) VALUES (?, ?)');
         for (const msgId of messageIds) {
@@ -165,6 +165,11 @@ module.exports = (socket, io, onlineUsers, db, logToFile) => {
     // ========== 群聊功能 ==========
 
     socket.on('join group room', (groupId) => {
+        const member = db.prepare('SELECT * FROM group_members WHERE groupId = ? AND userId = ?').get(groupId, userId);
+        if (!member) {
+            socket.emit('system message', '您不在该群中');
+            return;
+        }
         socket.join(`group:${groupId}`);
     });
 
@@ -242,7 +247,7 @@ module.exports = (socket, io, onlineUsers, db, logToFile) => {
                 const rt = `${now.getFullYear()}${String(now.getMonth()+1).padStart(2,'0')}${String(now.getDate()).padStart(2,'0')}_${String(now.getHours()).padStart(2,'0')}${String(now.getMinutes()).padStart(2,'0')}${String(now.getSeconds()).padStart(2,'0')}`;
                 const fileName = msg.fileName || path.basename(msg.fileUrl);
                 await fs.rename(originalSafePath, path.join(RECALLED_DIR, `${rt}_${userId}_${fileName}`));
-                
+
                 const uploader = db.prepare('SELECT role FROM users WHERE userId = ?').get(msg.userId);
                 if (uploader && uploader.role === 'user' && fileSize > 0) {
                     updateGlobalUsedBytesAtomically(-fileSize);

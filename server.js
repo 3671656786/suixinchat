@@ -1,4 +1,5 @@
 // server.js - 主入口
+process.env.TZ = 'Asia/Shanghai';
 require('dotenv').config();
 const express = require('express');
 const http = require('http');
@@ -33,8 +34,22 @@ async function gracefulShutdown(signal) {
         const dbModule = require('./db/connection');
         if (dbModule.close) {
             dbModule.close();
-            console.log('✅ 数据库已安全保存');
+            console.log('✅ 主数据库已安全保存');
         }
+        try {
+            const updatesDb = require('./db/updatesConnection');
+            if (updatesDb.close) {
+                updatesDb.close();
+                console.log('✅ 更新公告数据库已安全保存');
+            }
+        } catch (e) {}
+        try {
+            const notesDb = require('./db/notesConnection');
+            if (notesDb.close) {
+                notesDb.close();
+                console.log('✅ 云笔记数据库已安全保存');
+            }
+        } catch (e) {}
     } catch (e) {
         console.error('关闭数据库失败:', e);
     }
@@ -96,6 +111,7 @@ const agreementRoutes = require('./routes/agreement');
 const operationsRoutes = require('./routes/operations');
 const groupsRoutes = require('./routes/groups');
 const { router: reportRoutes, initReportSchedule } = require('./routes/report');
+const updatesRoutes = require('./routes/updates');
 
 app.use(authRoutes);
 app.use(userRoutes);
@@ -109,13 +125,18 @@ app.use(agreementRoutes);
 app.use(operationsRoutes);
 app.use(groupsRoutes);
 app.use(reportRoutes);
+app.use(updatesRoutes);
 
-// 静态页面路由
-const pages = ['chat','files','notes','admin','profile','announcements','clean-files','db-manager','agreement','operations'];
+// ========== 静态页面路由 ==========
+const pages = [
+    'chat', 'files', 'notes', 'admin', 'profile',
+    'announcements', 'clean-files', 'db-manager',
+    'agreement', 'operations', 'updates'
+];
 pages.forEach(p => app.get(`/${p}`, (req, res) => res.sendFile(path.join(__dirname, 'public', `${p}.html`))));
 app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
 
-// Socket.IO
+// ========== Socket.IO ==========
 const { initSocket } = require('./socket');
 
 // ========== 异步启动主函数 ==========
@@ -124,11 +145,19 @@ async function startServer() {
         // 1. 初始化协议文件
         await initAgreementFile();
 
-        // 2. 初始化数据库
+        // 2. 初始化主数据库
         const { initDatabase } = require('./db/init');
         await initDatabase();
 
-        // 3. 升级 Session 存储为 SQLite（如果启用）
+        // 3. 初始化更新公告数据库
+        const { initUpdatesDatabase } = require('./db/updatesInit');
+        await initUpdatesDatabase();
+
+        // 4. 初始化云笔记独立数据库
+        const { initNotesDatabase } = require('./db/notesInit');
+        await initNotesDatabase();
+
+        // 5. 升级 Session 存储为 SQLite（如果启用）
         const db = require('./db/connection');
         if (process.env.USE_SQLITE_SESSION === 'true') {
             const SQLiteSessionStore = require('./utils/sessionStore');
@@ -137,13 +166,13 @@ async function startServer() {
             console.log('✅ 使用 SQLite Session 存储');
         }
 
-        // 4. 初始化 Socket
+        // 6. 初始化 Socket.IO
         initSocket(server, sessionMiddleware);
 
-        // 5. 初始化定时报表
+        // 7. 初始化定时报表
         initReportSchedule();
 
-        // 6. 启动服务器
+        // 8. 启动服务器
         server.listen(PORT, () => {
             console.log(`🚀 Server running on http://localhost:${PORT}`);
         });

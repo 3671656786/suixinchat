@@ -1,7 +1,26 @@
+// public/index.js
 let currentUser = null;
 let isAuthMode = true;
 let socket = null;
 const DEFAULT_AVATAR_URL = 'https://api.dicebear.com/7.x/avataaars/svg?seed=default';
+
+if (typeof window.apiRequest !== 'function') {
+    window.apiRequest = function(url, method, body) {
+        return fetch(url, {
+            method: method,
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: body ? JSON.stringify(body) : undefined
+        }).then(function(res) { return res.json(); });
+    };
+}
+if (typeof window.escapeHtml !== 'function') {
+    window.escapeHtml = function(text) {
+        if (!text) return '';
+        var e = {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'};
+        return text.replace(/[&<>"']/g, function(m) { return e[m]; });
+    };
+}
 
 const authPanel = document.getElementById('authPanel');
 const mainApp = document.getElementById('mainApp');
@@ -34,26 +53,18 @@ let selectedAvatar = avatarPresets[0];
 
 function renderAvatarOptions() {
     avatarSelectArea.innerHTML = '';
-    avatarPresets.forEach(url => {
-        const img = document.createElement('img');
+    avatarPresets.forEach(function(url) {
+        var img = document.createElement('img');
         img.src = url;
-        img.style.width = '48px';
-        img.style.height = '48px';
-        img.style.borderRadius = '50%';
-        img.style.cursor = 'pointer';
-        img.style.border = url === selectedAvatar ? '2px solid #07c160' : '2px solid transparent';
-        img.addEventListener('click', () => { selectedAvatar = url; renderAvatarOptions(); });
+        img.style.cssText = 'width:48px;height:48px;border-radius:50%;cursor:pointer;border:' + (url === selectedAvatar ? '2px solid #07c160' : '2px solid transparent');
+        img.addEventListener('click', function() { selectedAvatar = url; renderAvatarOptions(); });
         avatarSelectArea.appendChild(img);
     });
-    const customInput = document.createElement('input');
+    var customInput = document.createElement('input');
     customInput.type = 'text';
     customInput.placeholder = '或输入图片URL';
-    customInput.style.width = '100%';
-    customInput.style.marginTop = '8px';
-    customInput.style.padding = '8px';
-    customInput.style.borderRadius = '20px';
-    customInput.style.border = '1px solid #ddd';
-    customInput.addEventListener('input', (e) => {
+    customInput.style.cssText = 'width:100%;margin-top:8px;padding:8px;border-radius:20px;border:1px solid #ddd;';
+    customInput.addEventListener('input', function(e) {
         selectedAvatar = e.target.value;
         renderAvatarOptions();
     });
@@ -61,14 +72,9 @@ function renderAvatarOptions() {
 }
 renderAvatarOptions();
 
-async function apiRequest(url, method, body) {
-    const res = await fetch(url, { method, headers: { 'Content-Type': 'application/json' }, credentials: 'include', body: body ? JSON.stringify(body) : undefined });
-    return res.json();
-}
-
 function toggleAuthMode() {
     isAuthMode = !isAuthMode;
-    const agreeCheckbox = document.getElementById('agreeAgreement');
+    var agreeCheckbox = document.getElementById('agreeAgreement');
     if (isAuthMode) {
         authTitle.innerText = '登录账户';
         authBtn.innerText = '登录';
@@ -94,159 +100,257 @@ function toggleAuthMode() {
 }
 switchText.addEventListener('click', toggleAuthMode);
 
-async function showAgreementModal(showAgreeButton = false) {
-    const modal = document.getElementById('agreementModal');
-    const contentDiv = document.getElementById('agreementContent');
-    const agreeBtn = document.getElementById('agreeProtocolBtn');
+async function showAgreementModal(showAgreeButton) {
+    showAgreeButton = showAgreeButton || false;
+    var modal = document.getElementById('agreementModal');
+    var contentDiv = document.getElementById('agreementContent');
+    var agreeBtn = document.getElementById('agreeProtocolBtn');
     contentDiv.innerHTML = '加载中...';
     modal.style.display = 'flex';
     if (agreeBtn) {
         agreeBtn.style.display = showAgreeButton ? 'inline-block' : 'none';
         if (showAgreeButton) {
-            agreeBtn.onclick = async () => {
-                const res = await apiRequest('/api/agree-agreement', 'POST');
-                if (res.success) { modal.style.display = 'none'; afterLogin(); }
-                else alert('同意协议失败，请重试');
+            agreeBtn.onclick = function() {
+                window.apiRequest('/api/agree-agreement', 'POST').then(function(res) {
+                    if (res.success) { modal.style.display = 'none'; afterLogin(); }
+                    else alert('同意协议失败，请重试');
+                });
             };
         }
     }
     try {
-        const res = await fetch('/api/agreement');
-        const data = await res.json();
+        var res = await fetch('/api/agreement');
+        var data = await res.json();
         contentDiv.innerText = data.success ? data.content : '协议加载失败';
     } catch (err) { contentDiv.innerText = '协议加载失败'; }
 }
-document.getElementById('showAgreementLink')?.addEventListener('click', (e) => { e.preventDefault(); showAgreementModal(false); });
-document.getElementById('closeAgreementModalBtn')?.addEventListener('click', () => { document.getElementById('agreementModal').style.display = 'none'; });
+document.getElementById('showAgreementLink')?.addEventListener('click', function(e) { e.preventDefault(); showAgreementModal(false); });
+document.getElementById('closeAgreementModalBtn')?.addEventListener('click', function() { document.getElementById('agreementModal').style.display = 'none'; });
 
-let countdown = 0;
-getCodeBtn.addEventListener('click', async () => {
+var countdown = 0;
+getCodeBtn.addEventListener('click', function() {
     if (countdown > 0) return;
-    const email = emailInput.value.trim();
+    var email = emailInput.value.trim();
     if (!email) { alert('请填写邮箱'); return; }
-    const res = await apiRequest('/api/send-verification-code', 'POST', { email });
-    if (res.success) {
-        alert('验证码已发送');
-        countdown = 60;
-        getCodeBtn.disabled = true;
-        getCodeBtn.innerText = `${countdown}秒后重试`;
-        const timer = setInterval(() => {
-            countdown--;
-            if (countdown <= 0) { clearInterval(timer); getCodeBtn.disabled = false; getCodeBtn.innerText = '获取验证码'; }
-            else getCodeBtn.innerText = `${countdown}秒后重试`;
-        }, 1000);
-    } else alert(res.message);
+    window.apiRequest('/api/send-verification-code', 'POST', { email: email }).then(function(res) {
+        if (res.success) {
+            alert('验证码已发送');
+            countdown = 60;
+            getCodeBtn.disabled = true;
+            getCodeBtn.innerText = countdown + '秒后重试';
+            var timer = setInterval(function() {
+                countdown--;
+                if (countdown <= 0) { clearInterval(timer); getCodeBtn.disabled = false; getCodeBtn.innerText = '获取验证码'; }
+                else getCodeBtn.innerText = countdown + '秒后重试';
+            }, 1000);
+        } else alert(res.message);
+    });
 });
 
 async function handleAuth() {
     if (isAuthMode) {
-        const account = accountInput.value.trim();
-        const password = passwordInput.value.trim();
+        var account = accountInput.value.trim();
+        var password = passwordInput.value.trim();
         if (!account || !password) { authError.innerText = '账号和密码不能为空'; return; }
-        const data = await apiRequest('/api/login', 'POST', { account, password });
+        var data = await window.apiRequest('/api/login', 'POST', { account: account, password: password });
         if (data.success) {
             currentUser = data.user;
             showAgreementModal(true);
         } else authError.innerText = data.message;
     } else {
-        const username = usernameInput.value.trim();
-        const password = passwordInput.value.trim();
-        const email = emailInput.value.trim();
-        const verificationCode = verificationCodeInput.value.trim();
-        const agreeCheckbox = document.getElementById('agreeAgreement');
+        var username = usernameInput.value.trim();
+        var password2 = passwordInput.value.trim();
+        var email = emailInput.value.trim();
+        var verificationCode = verificationCodeInput.value.trim();
+        var agreeCheckbox = document.getElementById('agreeAgreement');
         if (!agreeCheckbox.checked) { authError.innerText = '请阅读并同意用户协议'; return; }
-        if (!username || !password || !email || !verificationCode) { authError.innerText = '请填写所有字段'; return; }
-        const data = await apiRequest('/api/register', 'POST', { username, password, email, verificationCode, avatarUrl: selectedAvatar });
+        if (!username || !password2 || !email || !verificationCode) { authError.innerText = '请填写所有字段'; return; }
+        var data = await window.apiRequest('/api/register', 'POST', { username: username, password: password2, email: email, verificationCode: verificationCode, avatarUrl: selectedAvatar });
         if (data.success) { currentUser = data.user; afterLogin(); }
         else authError.innerText = data.message;
     }
 }
 authBtn.addEventListener('click', handleAuth);
 
+// ========== 实时时钟 ==========
+function updateClock() {
+    var now = new Date();
+    var year = now.getFullYear();
+    var month = String(now.getMonth() + 1).padStart(2, '0');
+    var day = String(now.getDate()).padStart(2, '0');
+    var hours = String(now.getHours()).padStart(2, '0');
+    var minutes = String(now.getMinutes()).padStart(2, '0');
+    var seconds = String(now.getSeconds()).padStart(2, '0');
+    var clockEl = document.getElementById('realTimeClock');
+    if (clockEl) {
+        clockEl.textContent = year + '年' + month + '月' + day + '日 ' + hours + ':' + minutes + ':' + seconds;
+    }
+}
+setInterval(updateClock, 1000);
+
+// ========== 更新公告弹窗 ==========
+function checkRecentUpdates() {
+    window.apiRequest('/api/updates/recent', 'GET').then(function(res) {
+        if (res.success && res.updates && res.updates.length > 0) {
+            showUpdatesPopup(res.updates);
+        }
+    }).catch(function(err) {
+        console.error('检查更新公告失败:', err);
+    });
+}
+
+function showUpdatesPopup(updates) {
+    var overlay = document.getElementById('updatesPopupOverlay');
+    var container = document.getElementById('popupUpdates');
+    var html = '';
+    for (var i = 0; i < updates.length; i++) {
+        var u = updates[i];
+        html += '<div style="background:#f9f9f9;border-radius:16px;padding:16px;margin-bottom:12px;border-left:4px solid #07c160;">';
+        html += '  <div style="font-weight:bold;color:#07c160;">v' + window.escapeHtml(u.version) + ' - ' + window.escapeHtml(u.title) + '</div>';
+        html += '  <div style="font-size:12px;color:#888;margin-bottom:8px;">' + new Date(u.created_at).toLocaleString() + '</div>';
+        var preview = u.content.length > 200 ? u.content.substring(0, 200) + '...' : u.content;
+        html += '  <div style="white-space:pre-wrap;font-size:14px;color:#333;">' + window.escapeHtml(preview) + '</div>';
+        html += '  <div style="margin-top:8px;"><a href="/updates" style="color:#07c160;text-decoration:none;">查看全部 →</a></div>';
+        html += '</div>';
+    }
+    container.innerHTML = html;
+    overlay.style.display = 'flex';
+
+    document.getElementById('closePopupBtn').onclick = function() {
+        markUpdatesRead(updates);
+        overlay.style.display = 'none';
+    };
+    overlay.onclick = function(e) {
+        if (e.target === overlay) {
+            markUpdatesRead(updates);
+            overlay.style.display = 'none';
+        }
+    };
+}
+
+function markUpdatesRead(updates) {
+    for (var i = 0; i < updates.length; i++) {
+        window.apiRequest('/api/updates/read', 'POST', { updateId: updates[i].id }).catch(function() {});
+    }
+}
+
+// ========== 登录后处理 ==========
 function afterLogin() {
     navUsername.innerText = currentUser.username;
     navAvatar.src = currentUser.avatarUrl || DEFAULT_AVATAR_URL;
-    navAvatar.onerror = () => { navAvatar.src = DEFAULT_AVATAR_URL; };
-    if (currentUser.role === 'admin') document.querySelectorAll('.admin-only').forEach(el => el.classList.remove('hidden'));
-    else document.querySelectorAll('.admin-only').forEach(el => el.classList.add('hidden'));
+    navAvatar.onerror = function() { navAvatar.src = DEFAULT_AVATAR_URL; };
+    if (currentUser.role === 'admin') {
+        document.querySelectorAll('.admin-only').forEach(function(el) { el.classList.remove('hidden'); });
+    } else {
+        document.querySelectorAll('.admin-only').forEach(function(el) { el.classList.add('hidden'); });
+    }
     authPanel.classList.add('hidden');
     mainApp.classList.remove('hidden');
     if (socket) socket.disconnect();
     socket = io({ withCredentials: true });
     window.socket = socket;
-    socket.on('system message', (msg) => {
-        if (msg.includes('服务器重启倒计时')) { const match = msg.match(/\d+/); if (match) showRestartOverlay(parseInt(match[0])); }
-        else alert('系统消息：' + msg);
+    socket.on('system message', function(msg) {
+        if (msg.includes('服务器重启倒计时')) {
+            var match = msg.match(/\d+/);
+            if (match) showRestartOverlay(parseInt(match[0]));
+        } else {
+            alert('系统消息：' + msg);
+        }
     });
-    socket.on('kicked', (reason) => { alert(reason); logout(); });
+    socket.on('kicked', function(reason) { alert(reason); logout(); });
+
+    updateClock();
+    checkRecentUpdates();
 }
 
 async function logout() {
-    await apiRequest('/api/logout', 'POST');
+    await window.apiRequest('/api/logout', 'POST');
     if (socket) socket.disconnect();
     currentUser = null;
     authPanel.classList.remove('hidden');
     mainApp.classList.add('hidden');
-    accountInput.value = ''; usernameInput.value = ''; passwordInput.value = ''; emailInput.value = ''; verificationCodeInput.value = '';
+    accountInput.value = '';
+    usernameInput.value = '';
+    passwordInput.value = '';
+    emailInput.value = '';
+    verificationCodeInput.value = '';
     selectedAvatar = avatarPresets[0];
     renderAvatarOptions();
 }
 logoutMainBtn.addEventListener('click', logout);
 
-let restartOverlay = null;
+var restartOverlay = null;
 function showRestartOverlay(countdown) {
     if (restartOverlay) return;
     restartOverlay = document.createElement('div');
-    restartOverlay.style.cssText = 'position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.85); z-index:10001; display:flex; justify-content:center; align-items:center; color:white; flex-direction:column;';
-    restartOverlay.innerHTML = `<h2>🔄 服务器正在重启</h2><div id="restartCountdown" style="font-size:48px;">${countdown}</div><p>请稍候，页面将自动刷新...</p>`;
+    restartOverlay.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.85);z-index:10001;display:flex;justify-content:center;align-items:center;color:white;flex-direction:column;';
+    restartOverlay.innerHTML = '<h2>🔄 服务器正在重启</h2><div id="restartCountdown" style="font-size:48px;">' + countdown + '</div><p>请稍候，页面将自动刷新...</p>';
     document.body.appendChild(restartOverlay);
-    let timer = setInterval(() => { countdown--; const cd = document.getElementById('restartCountdown'); if (cd) cd.innerText = countdown; if (countdown <= 0) { clearInterval(timer); window.location.reload(); } }, 1000);
+    var timer = setInterval(function() {
+        countdown--;
+        var cd = document.getElementById('restartCountdown');
+        if (cd) cd.innerText = countdown;
+        if (countdown <= 0) { clearInterval(timer); window.location.reload(); }
+    }, 1000);
 }
 
 // 忘记密码
-const forgotLink = document.getElementById('forgotPasswordLink');
-const forgotModal = document.getElementById('forgotModal');
-const closeForgotModal = document.getElementById('closeForgotModal');
-const resetEmail = document.getElementById('resetEmail');
-const resetCode = document.getElementById('resetCode');
-const resetNewPassword = document.getElementById('resetNewPassword');
-const resetConfirmPassword = document.getElementById('resetConfirmPassword');
-const sendResetCodeBtn = document.getElementById('sendResetCodeBtn');
-const resetPasswordBtn = document.getElementById('resetPasswordBtn');
-const resetMsg = document.getElementById('resetMsg');
-let resetCountdown = 0, resetTimer = null;
-forgotLink?.addEventListener('click', () => { forgotModal.style.display = 'flex'; resetEmail.value = ''; resetCode.value = ''; resetNewPassword.value = ''; resetConfirmPassword.value = ''; resetMsg.innerText = ''; });
-closeForgotModal?.addEventListener('click', () => { forgotModal.style.display = 'none'; });
-sendResetCodeBtn?.addEventListener('click', async () => {
+var forgotLink = document.getElementById('forgotPasswordLink');
+var forgotModal = document.getElementById('forgotModal');
+var closeForgotModal = document.getElementById('closeForgotModal');
+var resetEmail = document.getElementById('resetEmail');
+var resetCode = document.getElementById('resetCode');
+var resetNewPassword = document.getElementById('resetNewPassword');
+var resetConfirmPassword = document.getElementById('resetConfirmPassword');
+var sendResetCodeBtn = document.getElementById('sendResetCodeBtn');
+var resetPasswordBtn = document.getElementById('resetPasswordBtn');
+var resetMsg = document.getElementById('resetMsg');
+var resetCountdown = 0;
+var resetTimer = null;
+
+forgotLink?.addEventListener('click', function() {
+    forgotModal.style.display = 'flex';
+    resetEmail.value = '';
+    resetCode.value = '';
+    resetNewPassword.value = '';
+    resetConfirmPassword.value = '';
+    resetMsg.innerText = '';
+});
+closeForgotModal?.addEventListener('click', function() { forgotModal.style.display = 'none'; });
+sendResetCodeBtn?.addEventListener('click', function() {
     if (resetCountdown > 0) return;
-    const email = resetEmail.value.trim();
+    var email = resetEmail.value.trim();
     if (!email) { resetMsg.innerText = '请填写邮箱'; return; }
-    try {
-        const res = await fetch('/api/forgot-password/send-code', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify({ email }) });
-        const data = await res.json();
-        if (data.success) {
+    window.apiRequest('/api/forgot-password/send-code', 'POST', { email: email }).then(function(res) {
+        if (res.success) {
             alert('验证码已发送至邮箱');
             resetCountdown = 60;
             sendResetCodeBtn.disabled = true;
-            sendResetCodeBtn.innerText = `${resetCountdown}秒后重试`;
-            resetTimer = setInterval(() => { resetCountdown--; if (resetCountdown <= 0) { clearInterval(resetTimer); sendResetCodeBtn.disabled = false; sendResetCodeBtn.innerText = '获取验证码'; } else sendResetCodeBtn.innerText = `${resetCountdown}秒后重试`; }, 1000);
-        } else resetMsg.innerText = data.message;
-    } catch (err) { resetMsg.innerText = '发送失败'; }
+            sendResetCodeBtn.innerText = resetCountdown + '秒后重试';
+            resetTimer = setInterval(function() {
+                resetCountdown--;
+                if (resetCountdown <= 0) { clearInterval(resetTimer); sendResetCodeBtn.disabled = false; sendResetCodeBtn.innerText = '获取验证码'; }
+                else sendResetCodeBtn.innerText = resetCountdown + '秒后重试';
+            }, 1000);
+        } else resetMsg.innerText = res.message;
+    }).catch(function(err) { resetMsg.innerText = '发送失败'; });
 });
-resetPasswordBtn?.addEventListener('click', async () => {
-    const email = resetEmail.value.trim(), code = resetCode.value.trim(), newPwd = resetNewPassword.value.trim(), confirmPwd = resetConfirmPassword.value.trim();
+resetPasswordBtn?.addEventListener('click', function() {
+    var email = resetEmail.value.trim();
+    var code = resetCode.value.trim();
+    var newPwd = resetNewPassword.value.trim();
+    var confirmPwd = resetConfirmPassword.value.trim();
     if (!email || !code || !newPwd || !confirmPwd) { resetMsg.innerText = '请填写所有字段'; return; }
     if (newPwd !== confirmPwd) { resetMsg.innerText = '两次输入的新密码不一致'; return; }
     if (newPwd.length < 6) { resetMsg.innerText = '密码长度至少6位'; return; }
-    try {
-        const res = await fetch('/api/reset-password', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify({ email, verificationCode: code, newPassword: newPwd }) });
-        const data = await res.json();
-        if (data.success) { alert('密码重置成功，请登录'); forgotModal.style.display = 'none'; if (!isAuthMode) toggleAuthMode(); }
-        else resetMsg.innerText = data.message;
-    } catch (err) { resetMsg.innerText = '网络错误'; }
+    window.apiRequest('/api/reset-password', 'POST', { email: email, verificationCode: code, newPassword: newPwd }).then(function(res) {
+        if (res.success) { alert('密码重置成功，请登录'); forgotModal.style.display = 'none'; if (!isAuthMode) toggleAuthMode(); }
+        else resetMsg.innerText = res.message;
+    }).catch(function(err) { resetMsg.innerText = '网络错误'; });
 });
 
-(async () => {
-    const res = await apiRequest('/api/me', 'GET');
-    if (res.success && res.user) { currentUser = res.user; afterLogin(); }
+(function init() {
+    window.apiRequest('/api/me', 'GET').then(function(res) {
+        if (res.success && res.user) { currentUser = res.user; afterLogin(); }
+    });
 })();

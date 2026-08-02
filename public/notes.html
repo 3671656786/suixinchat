@@ -5,120 +5,155 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes, viewport-fit=cover">
     <title>云笔记 - 随心聊</title>
     <link rel="stylesheet" href="style.css">
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
     <style>
-        .notes-page {
-            max-width: 1200px;
-            margin: 0 auto;
-            padding: 1rem;
+        /* ===== 全局重置 ===== */
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
         }
-        .back-home {
-            display: inline-block;
-            margin-bottom: 1rem;
-            background: #f0f0f0;
-            padding: 8px 16px;
-            border-radius: 40px;
-            text-decoration: none;
-            color: #333;
-            font-size: 0.9rem;
-            transition: background 0.2s;
-        }
-        .back-home:hover {
-            background: #e0e0e0;
-        }
-        .notes-container {
-            background: white;
-            border-radius: 24px;
-            padding: 20px;
-            box-shadow: 0 4px 12px rgba(0,0,0,0.05);
-            display: flex;
-            gap: 20px;
-            min-height: 70vh;
+        body {
+            background: #f6f8fa;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
         }
 
-        /* ===== 左侧文件夹树 ===== */
-        .folder-sidebar {
-            width: 280px;
-            flex-shrink: 0;
-            border-right: 1px solid #eee;
-            padding-right: 16px;
-            overflow-y: auto;
-            max-height: 70vh;
+        /* ===== 顶部导航 ===== */
+        .notes-nav {
+            background: white;
+            border-bottom: 1px solid #e1e4e8;
+            padding: 0 16px;
+            height: 56px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            position: sticky;
+            top: 0;
+            z-index: 100;
         }
-        .folder-sidebar-header {
+        .notes-nav .nav-left {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+        .notes-nav .nav-left .back-home {
+            color: #8590a6;
+            text-decoration: none;
+            font-size: 14px;
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+        .notes-nav .nav-left .back-home:hover {
+            color: #444;
+        }
+        .notes-nav .nav-title {
+            font-size: 16px;
+            font-weight: 600;
+            color: #1a1a1a;
+        }
+        .notes-nav .nav-actions {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .notes-nav .nav-actions .btn {
+            padding: 6px 14px;
+            border-radius: 20px;
+            border: none;
+            font-size: 13px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .notes-nav .nav-actions .btn-primary {
+            background: #0066ff;
+            color: white;
+        }
+        .notes-nav .nav-actions .btn-primary:hover {
+            background: #0052cc;
+        }
+        .notes-nav .nav-actions .btn-secondary {
+            background: #f0f2f5;
+            color: #444;
+        }
+        .notes-nav .nav-actions .btn-secondary:hover {
+            background: #e4e6eb;
+        }
+
+        /* ===== 主体布局 ===== */
+        .notes-body {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 16px;
+            display: flex;
+            gap: 24px;
+            min-height: calc(100vh - 56px);
+        }
+
+        /* ===== 左侧：文件夹树 ===== */
+        .folder-sidebar {
+            width: 200px;
+            flex-shrink: 0;
+        }
+        .folder-sidebar .folder-header {
             display: flex;
             justify-content: space-between;
             align-items: center;
             margin-bottom: 12px;
-            font-weight: bold;
-            color: var(--primary);
+            font-weight: 600;
+            color: #1a1a1a;
+            font-size: 14px;
         }
-        .folder-sidebar-header button {
+        .folder-sidebar .folder-header button {
             background: none;
             border: none;
             cursor: pointer;
-            font-size: 1.2rem;
-            color: var(--primary);
-            padding: 4px 10px;
-            border-radius: 20px;
-            transition: background 0.2s;
+            font-size: 16px;
+            color: #8590a6;
+            padding: 2px 8px;
+            border-radius: 4px;
         }
-        .folder-sidebar-header button:hover {
-            background: #e8f5e9;
+        .folder-sidebar .folder-header button:hover {
+            background: #f0f2f5;
+            color: #0066ff;
         }
-
         .folder-tree {
             list-style: none;
             padding: 0;
-            margin: 0;
         }
         .folder-tree li {
-            padding: 6px 8px;
+            padding: 8px 8px;
             cursor: pointer;
-            border-radius: 10px;
+            border-radius: 6px;
             display: flex;
             flex-direction: column;
+            font-size: 14px;
+            color: #444;
             transition: background 0.15s;
-            min-height: 36px;
-            margin-bottom: 2px;
-            overflow: hidden;
-            width: 100%;
-            box-sizing: border-box;
         }
         .folder-tree li:hover {
-            background: #f0f0f0;
+            background: #f0f2f5;
         }
         .folder-tree li.active {
-            background: #e8f5e9;
-            color: var(--primary);
+            background: #e8f0fe;
+            color: #0066ff;
             font-weight: 500;
         }
         .folder-tree .folder-item {
             display: flex;
-            justify-content: space-between;
             align-items: center;
-            width: 100%;
             gap: 4px;
-            min-width: 0;
-            flex-wrap: nowrap;
+            width: 100%;
         }
         .folder-tree .folder-item .folder-toggle {
             cursor: pointer;
-            font-size: 0.7rem;
-            color: #888;
-            user-select: none;
-            flex-shrink: 0;
+            font-size: 10px;
+            color: #8590a6;
             width: 18px;
             text-align: center;
-            padding: 2px 0;
-            border-radius: 12px;
-            transition: background 0.2s, color 0.2s;
-        }
-        .folder-tree .folder-item .folder-toggle:hover {
-            background: rgba(0,0,0,0.06);
-            color: var(--primary);
+            flex-shrink: 0;
         }
         .folder-tree .folder-item .folder-toggle-placeholder {
-            display: inline-block;
             width: 18px;
             flex-shrink: 0;
         }
@@ -127,78 +162,37 @@
             overflow: hidden;
             text-overflow: ellipsis;
             white-space: nowrap;
-            font-size: 14px;
-            line-height: 1.6;
-            min-width: 0;
-            padding: 0 2px;
         }
-
-        .folder-tree .sub-tree {
-            padding-left: 24px !important;
-            list-style: none;
-            margin: 0;
-            display: block;
-            width: 100%;
-            box-sizing: border-box;
-        }
-        .folder-tree .sub-tree .sub-tree {
-            padding-left: 20px !important;
-        }
-
-        /* ===== 文件夹操作按钮（管理员常驻显示，按钮缩小） ===== */
-        .folder-tree .folder-actions {
-            display: flex !important;
+        .folder-tree .folder-item .folder-actions {
+            display: none;
             gap: 2px;
             flex-shrink: 0;
-            flex-wrap: nowrap;
-            margin-left: auto;
+        }
+        .folder-tree li:hover .folder-actions {
+            display: flex;
         }
         .folder-tree .folder-actions button {
-            background: rgba(0,0,0,0.05);
+            background: none;
             border: none;
             cursor: pointer;
-            font-size: 0.7rem;
-            color: #555;
-            padding: 2px 6px;
-            border-radius: 12px;
-            transition: background 0.15s, color 0.15s;
-            min-width: 24px;
-            height: 24px;
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            line-height: 1;
-            flex-shrink: 0;
+            font-size: 12px;
+            color: #8590a6;
+            padding: 0 4px;
         }
         .folder-tree .folder-actions button:hover {
-            background: rgba(0,0,0,0.12);
+            color: #0066ff;
         }
-        .folder-tree .folder-actions button.add-folder:hover {
-            color: #2e7d32;
-            background: #e8f5e9;
-        }
-        .folder-tree .folder-actions button.rename-folder:hover {
-            color: #1565c0;
-            background: #e3f2fd;
-        }
-        .folder-tree .folder-actions button.delete-folder:hover {
-            color: #c62828;
-            background: #ffebee;
-        }
-        /* 非管理员时隐藏按钮 */
-        .folder-tree:not(.admin-mode) .folder-actions {
-            display: none !important;
-        }
-        .folder-tree:not(.admin-mode) li:hover .folder-actions {
-            display: flex !important;
+        .folder-tree .sub-tree {
+            padding-left: 18px;
+            list-style: none;
         }
 
-        /* ===== 右侧笔记列表 ===== */
-        .notes-content {
+        /* ===== 中间：笔记列表 ===== */
+        .notes-list-wrap {
             flex: 1;
             min-width: 0;
         }
-        .notes-header {
+        .notes-list-wrap .list-header {
             display: flex;
             justify-content: space-between;
             align-items: center;
@@ -206,49 +200,85 @@
             flex-wrap: wrap;
             gap: 8px;
         }
-        .notes-header h2 {
-            margin: 0;
-            font-size: 1.3rem;
-            color: var(--primary);
+        .notes-list-wrap .list-header h2 {
+            font-size: 18px;
+            color: #1a1a1a;
+            font-weight: 600;
         }
-        .notes-header .actions {
+        .notes-list-wrap .list-header .actions {
             display: flex;
             gap: 8px;
         }
+        .notes-list-wrap .list-header .actions button {
+            padding: 6px 14px;
+            border-radius: 20px;
+            border: none;
+            font-size: 13px;
+            cursor: pointer;
+            background: #0066ff;
+            color: white;
+            transition: background 0.2s;
+        }
+        .notes-list-wrap .list-header .actions button:hover {
+            background: #0052cc;
+        }
 
         .note-item {
-            background: #f9f9f9;
-            border-radius: 16px;
+            background: white;
+            border-radius: 12px;
             padding: 16px;
             margin-bottom: 12px;
             cursor: pointer;
             transition: 0.2s;
-            border-left: 4px solid transparent;
+            border: 1px solid #e1e4e8;
+            box-shadow: 0 1px 2px rgba(0,0,0,0.04);
         }
         .note-item:hover {
-            background: #f0f0f0;
-            border-left-color: var(--primary);
+            border-color: #0066ff;
+            box-shadow: 0 2px 8px rgba(0,102,255,0.08);
+            transform: translateY(-1px);
         }
-        .note-title {
-            font-weight: bold;
-            margin-bottom: 8px;
-            font-size: 1rem;
+        .note-item .note-title {
+            font-weight: 600;
+            font-size: 16px;
+            color: #1a1a1a;
+            margin-bottom: 6px;
         }
-        .note-meta {
-            font-size: 12px;
-            color: #888;
+        .note-item .note-meta {
+            font-size: 13px;
+            color: #8590a6;
             display: flex;
             justify-content: space-between;
             flex-wrap: wrap;
             gap: 4px;
         }
+        .note-item .note-meta .tags {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+        .note-item .note-meta .tags .edit-btn {
+            background: none;
+            border: 1px solid #0066ff;
+            color: #0066ff;
+            padding: 2px 12px;
+            border-radius: 12px;
+            font-size: 12px;
+            cursor: pointer;
+            transition: 0.2s;
+        }
+        .note-item .note-meta .tags .edit-btn:hover {
+            background: #0066ff;
+            color: white;
+        }
         .note-empty {
             text-align: center;
-            color: #999;
+            color: #8590a6;
             padding: 60px 20px;
         }
 
-        /* ===== 模态框 ===== */
+        /* ===== 编辑器模态框 ===== */
         .modal {
             position: fixed;
             top: 0;
@@ -256,352 +286,738 @@
             width: 100%;
             height: 100%;
             background: rgba(0,0,0,0.5);
-            display: flex;
+            display: none;
             justify-content: center;
             align-items: center;
             z-index: 1000;
             backdrop-filter: blur(4px);
         }
-        .modal-content {
-            background: white;
-            border-radius: 28px;
-            width: 780px;
-            max-width: 94%;
-            padding: 28px;
-            max-height: 92vh;
-            overflow-y: auto;
-            box-shadow: 0 20px 60px rgba(0,0,0,0.2);
-            animation: modalFadeIn 0.25s ease;
-        }
-        @keyframes modalFadeIn {
-            from { opacity: 0; transform: scale(0.96) translateY(10px); }
-            to { opacity: 1; transform: scale(1) translateY(0); }
-        }
-        .modal-header {
+        .modal.active {
             display: flex;
-            justify-content: space-between;
+        }
+        .modal .modal-content {
+            background: white;
+            width: 100%;
+            height: 100%;
+            max-height: 100vh;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+        }
+
+        /* ===== 编辑器顶部栏 ===== */
+        .editor-toolbar {
+            background: white;
+            border-bottom: 1px solid #e1e4e8;
+            padding: 8px 16px;
+            display: flex;
             align-items: center;
-            margin-bottom: 20px;
+            justify-content: space-between;
+            flex-shrink: 0;
+            flex-wrap: wrap;
+            gap: 8px;
+            position: sticky;
+            top: 0;
+            z-index: 10;
         }
-        .modal-header h3 {
-            margin: 0;
-            color: var(--primary);
-            font-size: 1.4rem;
+        .editor-toolbar .toolbar-left {
+            display: flex;
+            align-items: center;
+            gap: 8px;
         }
-        .modal-header .close-btn {
+        .editor-toolbar .toolbar-left .close-btn {
             background: none;
             border: none;
-            font-size: 28px;
+            font-size: 24px;
             cursor: pointer;
-            color: #999;
-            padding: 0 8px;
-            transition: color 0.2s;
+            color: #8590a6;
+            padding: 0 4px;
         }
-        .modal-header .close-btn:hover {
-            color: var(--danger);
+        .editor-toolbar .toolbar-left .close-btn:hover {
+            color: #1a1a1a;
         }
-        .modal-subtitle {
-            font-size: 0.9rem;
-            color: #888;
-            margin-top: -8px;
-            margin-bottom: 16px;
+        .editor-toolbar .toolbar-left .editor-title {
+            font-size: 16px;
+            font-weight: 600;
+            color: #1a1a1a;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            max-width: 150px;
         }
-
-        .note-editor .field-group {
-            margin-bottom: 16px;
-        }
-        .note-editor .field-group label {
-            font-weight: 500;
-            display: block;
-            margin-bottom: 5px;
-            color: #555;
-            font-size: 0.9rem;
-        }
-        .note-editor .field-group input,
-        .note-editor .field-group textarea,
-        .note-editor .field-group select {
-            width: 100%;
-            padding: 10px 14px;
-            border: 1.5px solid #e0e0e0;
-            border-radius: 14px;
-            font-size: 15px;
-            transition: border-color 0.2s, box-shadow 0.2s;
-            font-family: inherit;
-            background: #fafafa;
-        }
-        .note-editor .field-group input:focus,
-        .note-editor .field-group textarea:focus,
-        .note-editor .field-group select:focus {
-            border-color: var(--primary);
-            box-shadow: 0 0 0 3px rgba(7, 193, 96, 0.12);
-            outline: none;
-            background: white;
-        }
-        .note-editor .field-group textarea {
-            min-height: 160px;
-            resize: vertical;
-        }
-        .note-editor .field-group input:disabled,
-        .note-editor .field-group textarea:disabled,
-        .note-editor .field-group select:disabled {
-            background: #f5f5f5;
-            cursor: not-allowed;
-            opacity: 0.8;
-        }
-
-        .attachments-list {
-            border: 1.5px dashed #d0d0d0;
-            border-radius: 14px;
-            padding: 12px;
-            min-height: 60px;
-            background: #fafafa;
-            transition: border-color 0.2s;
-        }
-        .attachments-list:hover {
-            border-color: var(--primary);
-        }
-        .attachments-list .attachment-item {
+        .editor-toolbar .toolbar-right {
             display: flex;
-            justify-content: space-between;
             align-items: center;
-            padding: 8px 14px;
-            background: white;
-            border-radius: 12px;
-            margin-bottom: 6px;
-            border: 1px solid #f0f0f0;
-            transition: border-color 0.2s;
+            gap: 6px;
         }
-        .attachments-list .attachment-item:hover {
-            border-color: var(--primary);
-        }
-        .attachments-list .attachment-item .attachment-actions button {
-            padding: 4px 14px;
-            border-radius: 30px;
+        .editor-toolbar .toolbar-right .btn {
+            padding: 6px 14px;
+            border-radius: 20px;
             border: none;
-            font-size: 12px;
-            cursor: pointer;
-            margin-left: 6px;
-            transition: opacity 0.2s;
-        }
-        .attachments-list .attachment-item .attachment-actions button:hover {
-            opacity: 0.8;
-        }
-        .attachments-list .attachment-item .attachment-actions .rename-attach {
-            background: #e3f2fd;
-            color: #1976d2;
-        }
-        .attachments-list .attachment-item .attachment-actions .preview-attach {
-            background: #e8f5e9;
-            color: #388e3c;
-        }
-        .attachments-list .attachment-item .attachment-actions .download-attach {
-            background: #fff3e0;
-            color: #e65100;
-        }
-        .attachments-list .attachment-item .attachment-actions .delete-attach {
-            background: #ffebee;
-            color: #d32f2f;
-        }
-
-        .note-editor .file-input-wrapper {
-            margin-top: 10px;
-            display: block;
-            width: 100%;
-        }
-        .note-editor .file-input-wrapper input[type="file"] {
-            display: block;
-            width: 100%;
-            padding: 10px;
-            border: 1.5px dashed #d0d0d0;
-            border-radius: 14px;
-            background: #fafafa;
-            cursor: pointer;
-            font-size: 14px;
-            transition: border-color 0.2s;
-        }
-        .note-editor .file-input-wrapper input[type="file"]:hover {
-            border-color: var(--primary);
-        }
-
-        .modal-footer {
-            display: flex;
-            justify-content: flex-end;
-            gap: 12px;
-            margin-top: 20px;
-            padding-top: 16px;
-            border-top: 1px solid #eee;
-        }
-        .modal-footer button {
-            padding: 10px 28px;
-            border-radius: 40px;
-            font-weight: 500;
-            font-size: 15px;
+            font-size: 13px;
             cursor: pointer;
             transition: all 0.2s;
         }
-        .modal-footer .btn-secondary {
-            background: #f0f0f0;
-            border: none;
-            color: #555;
-        }
-        .modal-footer .btn-secondary:hover {
-            background: #e0e0e0;
-        }
-        .modal-footer .btn-primary {
-            background: var(--primary);
-            border: none;
+        .editor-toolbar .toolbar-right .btn-primary {
+            background: #0066ff;
             color: white;
         }
-        .modal-footer .btn-primary:hover {
-            background: var(--primary-dark);
-            transform: translateY(-1px);
-            box-shadow: 0 4px 12px rgba(7, 193, 96, 0.3);
+        .editor-toolbar .toolbar-right .btn-primary:hover {
+            background: #0052cc;
+        }
+        .editor-toolbar .toolbar-right .btn-secondary {
+            background: #f0f2f5;
+            color: #444;
+        }
+        .editor-toolbar .toolbar-right .btn-secondary:hover {
+            background: #e4e6eb;
         }
 
-        /* ===== 在线成员侧边栏 ===== */
-        .online-sidebar {
-            margin-top: 20px;
+        /* ===== 编辑器主体 ===== */
+        .editor-body {
+            display: flex;
+            flex: 1;
+            overflow: hidden;
+            background: #f6f8fa;
+            flex-direction: column; /* 手机端默认单栏 */
+        }
+
+        /* 左侧：编辑区 */
+        .editor-main {
+            flex: 1;
+            min-width: 0;
+            padding: 16px;
+            overflow-y: auto;
             background: white;
-            border-radius: 16px;
-            padding: 12px;
+            margin: 8px;
+            border-radius: 12px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.06);
         }
-        .online-sidebar h3 {
-            font-size: 0.9rem;
-            margin-bottom: 12px;
-            color: #333;
+        .editor-main .field-group {
+            margin-bottom: 16px;
+        }
+        .editor-main .field-group label {
+            font-weight: 500;
+            display: block;
+            margin-bottom: 6px;
+            color: #444;
+            font-size: 14px;
+        }
+        .editor-main .field-group input[type="text"] {
+            width: 100%;
+            padding: 10px 14px;
+            border: 2px solid #e1e4e8;
+            border-radius: 8px;
+            font-size: 18px;
+            font-weight: 600;
+            transition: border-color 0.2s;
+            font-family: inherit;
+            -webkit-appearance: none;
+        }
+        .editor-main .field-group input[type="text"]:focus {
+            border-color: #0066ff;
+            outline: none;
+        }
+        .editor-main .field-group input[type="text"]:disabled {
+            background: #f6f8fa;
+            cursor: not-allowed;
         }
 
-        /* ===== 移动端响应式 ===== */
-        @media (max-width: 768px) {
-            .notes-container {
-                flex-direction: column;
+        .editor-main .md-editor {
+            border: 2px solid #e1e4e8;
+            border-radius: 8px;
+            overflow: hidden;
+            transition: border-color 0.2s;
+        }
+        .editor-main .md-editor:focus-within {
+            border-color: #0066ff;
+        }
+        .editor-main .md-editor .md-toolbar {
+            display: flex;
+            gap: 2px;
+            padding: 6px 8px;
+            background: #f6f8fa;
+            border-bottom: 1px solid #e1e4e8;
+            flex-wrap: wrap;
+        }
+        .editor-main .md-editor .md-toolbar button {
+            background: none;
+            border: none;
+            padding: 4px 8px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 13px;
+            color: #444;
+            transition: background 0.15s;
+        }
+        .editor-main .md-editor .md-toolbar button:hover {
+            background: #e4e6eb;
+            color: #0066ff;
+        }
+        .editor-main .md-editor .md-toolbar .separator {
+            width: 1px;
+            background: #e1e4e8;
+            margin: 0 4px;
+        }
+        .editor-main .md-editor textarea {
+            width: 100%;
+            min-height: 200px;
+            padding: 12px 14px;
+            border: none;
+            font-size: 15px;
+            line-height: 1.8;
+            font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+            resize: vertical;
+            background: white;
+            color: #1a1a1a;
+            -webkit-appearance: none;
+        }
+        .editor-main .md-editor textarea:focus {
+            outline: none;
+        }
+        .editor-main .md-editor textarea:disabled {
+            background: #f6f8fa;
+            cursor: not-allowed;
+        }
+
+        .editor-main .md-preview {
+            padding: 12px 14px;
+            min-height: 200px;
+            font-size: 15px;
+            line-height: 1.8;
+            color: #1a1a1a;
+        }
+        .editor-main .md-preview h1 { font-size: 26px; font-weight: 700; margin: 0.6em 0 0.3em; border-bottom: 1px solid #e1e4e8; padding-bottom: 0.3em; }
+        .editor-main .md-preview h2 { font-size: 20px; font-weight: 600; margin: 0.6em 0 0.3em; border-bottom: 1px solid #eee; padding-bottom: 0.3em; }
+        .editor-main .md-preview h3 { font-size: 17px; font-weight: 600; margin: 0.6em 0 0.3em; }
+        .editor-main .md-preview p { margin: 0.5em 0; }
+        .editor-main .md-preview ul, .editor-main .md-preview ol { padding-left: 1.5em; margin: 0.5em 0; }
+        .editor-main .md-preview blockquote {
+            border-left: 4px solid #0066ff;
+            padding-left: 1em;
+            color: #555;
+            background: #f6f8fa;
+            margin: 0.5em 0;
+            padding: 0.5em 1em;
+        }
+        .editor-main .md-preview pre {
+            background: #1a1a1a;
+            color: #f8f8f2;
+            padding: 10px 14px;
+            border-radius: 8px;
+            overflow-x: auto;
+            font-family: 'Consolas', 'Monaco', monospace;
+            font-size: 13px;
+            line-height: 1.6;
+            margin: 0.6em 0;
+        }
+        .editor-main .md-preview code {
+            background: #f0f2f5;
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-family: 'Consolas', 'Monaco', monospace;
+            font-size: 0.9em;
+        }
+        .editor-main .md-preview pre code {
+            background: transparent;
+            padding: 0;
+            border-radius: 0;
+            color: inherit;
+        }
+        .editor-main .md-preview img {
+            max-width: 100%;
+            border-radius: 8px;
+            margin: 0.5em 0;
+        }
+        .editor-main .md-preview table {
+            border-collapse: collapse;
+            width: 100%;
+            margin: 0.6em 0;
+        }
+        .editor-main .md-preview th, .editor-main .md-preview td {
+            border: 1px solid #e1e4e8;
+            padding: 8px 12px;
+            text-align: left;
+        }
+        .editor-main .md-preview th {
+            background: #f6f8fa;
+        }
+
+        .editor-main .mode-toggle {
+            display: flex;
+            gap: 4px;
+            margin-top: 8px;
+        }
+        .editor-main .mode-toggle button {
+            padding: 4px 12px;
+            border: 1px solid #e1e4e8;
+            border-radius: 16px;
+            background: white;
+            font-size: 12px;
+            cursor: pointer;
+            color: #8590a6;
+            transition: all 0.2s;
+        }
+        .editor-main .mode-toggle button.active {
+            background: #0066ff;
+            color: white;
+            border-color: #0066ff;
+        }
+        .editor-main .mode-toggle button:hover:not(.active) {
+            background: #f0f2f5;
+        }
+
+        /* ===== 右侧：信息栏（移动端在编辑器下方） ===== */
+        .editor-sidebar {
+            width: 100%;
+            flex-shrink: 0;
+            padding: 8px 16px 16px;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+        .editor-sidebar .sidebar-section {
+            background: white;
+            border-radius: 12px;
+            padding: 14px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+        }
+        .editor-sidebar .sidebar-section h4 {
+            font-size: 13px;
+            font-weight: 600;
+            color: #8590a6;
+            margin-bottom: 8px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        .editor-sidebar .sidebar-section .folder-select {
+            width: 100%;
+            padding: 8px 12px;
+            border: 1px solid #e1e4e8;
+            border-radius: 6px;
+            font-size: 13px;
+            background: white;
+            -webkit-appearance: none;
+        }
+        .editor-sidebar .sidebar-section .folder-select:disabled {
+            background: #f6f8fa;
+            cursor: not-allowed;
+        }
+
+        /* ===== 附件区域（可折叠） ===== */
+        .editor-sidebar .sidebar-section.attachment-section .section-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            cursor: pointer;
+            user-select: none;
+            padding: 4px 0;
+            border-radius: 6px;
+            transition: background 0.15s;
+        }
+        .editor-sidebar .sidebar-section.attachment-section .section-header:hover {
+            background: #f0f2f5;
+        }
+        .editor-sidebar .sidebar-section.attachment-section .section-header h4 {
+            margin-bottom: 0;
+        }
+        .editor-sidebar .sidebar-section.attachment-section .section-header .toggle-icon {
+            font-size: 14px;
+            color: #8590a6;
+            transition: transform 0.3s ease;
+        }
+        #attachmentContent {
+            overflow: hidden;
+            transition: max-height 0.35s ease, padding 0.35s ease, margin 0.35s ease;
+            max-height: 600px;
+            padding-top: 0;
+        }
+        #attachmentContent.collapsed {
+            max-height: 0 !important;
+            padding-top: 0;
+            padding-bottom: 0;
+            margin: 0;
+            overflow: hidden;
+        }
+
+        .editor-sidebar .attachment-list {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            max-height: 200px;
+            overflow-y: auto;
+        }
+        .editor-sidebar .attachment-item {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 8px 10px;
+            background: #f6f8fa;
+            border-radius: 6px;
+            font-size: 13px;
+            transition: background 0.15s;
+        }
+        .editor-sidebar .attachment-item:hover {
+            background: #e8f0fe;
+        }
+        .editor-sidebar .attachment-item .att-icon {
+            font-size: 18px;
+            flex-shrink: 0;
+        }
+        .editor-sidebar .attachment-item .att-info {
+            flex: 1;
+            min-width: 0;
+        }
+        .editor-sidebar .attachment-item .att-info .att-name {
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            color: #1a1a1a;
+        }
+        .editor-sidebar .attachment-item .att-info .att-size {
+            font-size: 11px;
+            color: #8590a6;
+        }
+        .editor-sidebar .attachment-item .att-actions {
+            display: flex;
+            gap: 4px;
+            flex-shrink: 0;
+        }
+        .editor-sidebar .attachment-item .att-actions button {
+            background: none;
+            border: none;
+            cursor: pointer;
+            font-size: 14px;
+            color: #8590a6;
+            padding: 2px 4px;
+            border-radius: 4px;
+        }
+        .editor-sidebar .attachment-item .att-actions button:hover {
+            background: #e4e6eb;
+            color: #0066ff;
+        }
+        .editor-sidebar .attachment-item .att-actions .delete-btn:hover {
+            color: #ff4d4f;
+        }
+
+        .editor-sidebar .upload-area {
+            border: 2px dashed #d0d7de;
+            border-radius: 8px;
+            padding: 12px;
+            text-align: center;
+            color: #8590a6;
+            font-size: 13px;
+            cursor: pointer;
+            transition: border-color 0.2s, background 0.2s;
+            margin-top: 8px;
+        }
+        .editor-sidebar .upload-area:hover {
+            border-color: #0066ff;
+            background: #f0f7ff;
+        }
+        .editor-sidebar .upload-area.dragover {
+            border-color: #0066ff;
+            background: #e8f0fe;
+        }
+        .editor-sidebar .upload-area input[type="file"] {
+            display: none;
+        }
+
+        /* ===== 桌面端（≥768px）双栏布局 ===== */
+        @media (min-width: 768px) {
+            .editor-body {
+                flex-direction: row;
             }
+            .editor-sidebar {
+                width: 280px;
+                padding: 16px 16px 16px 0;
+                flex-shrink: 0;
+            }
+            .editor-main {
+                margin: 16px 0 16px 16px;
+                padding: 24px 32px;
+            }
+            .editor-main .md-editor textarea {
+                min-height: 320px;
+            }
+            .editor-toolbar .toolbar-left .editor-title {
+                max-width: 300px;
+            }
+            /* 桌面端始终展开附件 */
+            #attachmentContent.collapsed {
+                max-height: 600px !important;
+                overflow: visible;
+            }
+            .editor-sidebar .sidebar-section.attachment-section .section-header .toggle-icon {
+                display: none;
+            }
+        }
+
+        /* ===== 手机端核心修复 ===== */
+        @media (max-width: 767px) {
+            /* 主体改为纵向排列，避免重叠 */
+            .notes-body {
+                flex-direction: column !important;
+                padding: 10px;
+                gap: 12px;
+            }
+            /* 文件夹占满宽度，不在左侧浮动 */
             .folder-sidebar {
-                width: 100%;
+                width: 100% !important;
+                flex-shrink: 1;
+                min-width: 0;
                 border-right: none;
-                border-bottom: 1px solid #eee;
-                max-height: 200px;
-                padding-bottom: 12px;
                 padding-right: 0;
+                margin-bottom: 12px;
             }
-            .folder-tree li {
-                min-height: 44px;
-                padding: 8px 6px;
+            /* 笔记列表占满宽度，避免被挤压 */
+            .notes-list-wrap {
+                width: 100% !important;
+                flex: none !important;
+                min-width: 0;
             }
-            .folder-tree .folder-actions button {
-                font-size: 0.8rem;
-                padding: 4px 8px;
-                min-width: 30px;
-                height: 30px;
+            .note-item {
+                padding: 14px;
             }
-            .modal-content {
-                padding: 16px;
+            .note-item .note-title {
+                font-size: 15px;
+            }
+            /* 编辑器内也改为纵向 */
+            .editor-body {
+                flex-direction: column !important;
+            }
+            .editor-main {
+                margin: 4px;
+                padding: 12px;
+                width: auto;
+            }
+            .editor-sidebar {
+                width: 100% !important;
+                padding: 8px 12px 16px;
+                flex-shrink: 1;
+            }
+            /* 编辑器工具栏适配 */
+            .editor-toolbar .toolbar-left .editor-title {
+                max-width: 100px;
+                font-size: 14px;
+            }
+            .editor-toolbar .toolbar-right .btn {
+                padding: 4px 10px;
+                font-size: 12px;
+            }
+            .editor-main .field-group input[type="text"] {
+                font-size: 16px;
+                padding: 8px 12px;
+            }
+            .editor-main .md-editor textarea {
+                min-height: 150px;
+                font-size: 14px;
+                padding: 10px 12px;
+            }
+            .editor-main .md-preview {
+                font-size: 14px;
+                padding: 10px 12px;
+            }
+            .editor-main .md-editor .md-toolbar button {
+                font-size: 12px;
+                padding: 3px 6px;
+            }
+            .editor-sidebar .sidebar-section {
+                padding: 12px;
+            }
+            .editor-sidebar .attachment-list {
+                max-height: 150px;
+            }
+            /* 附件的折叠切换在手机端生效 */
+            .editor-sidebar .sidebar-section.attachment-section .section-header {
+                cursor: pointer;
+            }
+            #attachmentContent.collapsed {
+                max-height: 0 !important;
+                padding: 0 !important;
+                margin: 0 !important;
+                overflow: hidden;
+            }
+        }
+
+        /* 小屏手机额外优化 */
+        @media (max-width: 480px) {
+            .notes-nav {
+                padding: 0 10px;
+                height: 50px;
+            }
+            .notes-nav .nav-title {
+                font-size: 14px;
+            }
+            .notes-body {
+                padding: 8px;
+            }
+            .folder-sidebar .folder-tree li {
+                padding: 10px 8px;
+                font-size: 15px;
             }
         }
     </style>
 </head>
 <body>
-<div class="notes-page">
-    <a href="/" class="back-home">← 返回主界面</a>
-    <div class="notes-container">
-        <!-- 左侧文件夹树 -->
-        <div class="folder-sidebar" id="folderSidebar">
-            <div class="folder-sidebar-header">
-                <span>📂 文件夹</span>
-                <button id="newFolderBtn" class="admin-only hidden" title="在根目录下新建文件夹">➕</button>
-            </div>
-            <ul class="folder-tree" id="folderTree">
-                <li class="active" data-folder-id="0">
-                    <span>📁 全部笔记</span>
-                </li>
-            </ul>
+
+<!-- ===== 顶部导航 ===== -->
+<div class="notes-nav">
+    <div class="nav-left">
+        <a href="/" class="back-home">← 返回首页</a>
+        <span class="nav-title">📝 云笔记</span>
+    </div>
+    <div class="nav-actions">
+        <button id="newNoteBtn" class="btn btn-primary admin-only hidden">+ 新建笔记</button>
+    </div>
+</div>
+
+<!-- ===== 主体 ===== -->
+<div class="notes-body">
+    <!-- 左侧：文件夹树 -->
+    <div class="folder-sidebar">
+        <div class="folder-header">
+            <span>📂 文件夹</span>
+            <button id="newFolderBtn" class="admin-only hidden" title="新建文件夹">+</button>
         </div>
-        <!-- 右侧内容 -->
-        <div class="notes-content">
-            <div class="notes-header">
-                <h2 id="currentFolderTitle">📁 全部笔记</h2>
-                <div class="actions">
-                    <button id="newNoteBtn" class="btn-secondary admin-only hidden">➕ 新建笔记</button>
+        <ul class="folder-tree" id="folderTree">
+            <li class="active" data-folder-id="0">
+                <span>📁 全部笔记</span>
+            </li>
+        </ul>
+    </div>
+
+    <!-- 中间：笔记列表 -->
+    <div class="notes-list-wrap">
+        <div class="list-header">
+            <h2 id="currentFolderTitle">📁 全部笔记</h2>
+            <div class="actions">
+                <button id="refreshListBtn">🔄 刷新</button>
+            </div>
+        </div>
+        <div id="notesList" class="notes-list">加载中...</div>
+    </div>
+</div>
+
+<!-- ===== 编辑器模态框 ===== -->
+<div id="editorModal" class="modal">
+    <div class="modal-content">
+        <!-- 顶部栏 -->
+        <div class="editor-toolbar">
+            <div class="toolbar-left">
+                <button class="close-btn" id="closeEditorBtn">✕</button>
+                <span class="editor-title" id="editorModalTitle">✏️ 编辑笔记</span>
+            </div>
+            <div class="toolbar-right">
+                <button class="btn btn-secondary" id="cancelEditorBtn">取消</button>
+                <button class="btn btn-primary" id="saveEditorBtn">💾 保存</button>
+            </div>
+        </div>
+
+        <!-- 编辑器主体 -->
+        <div class="editor-body">
+            <!-- 左侧：编辑区 -->
+            <div class="editor-main">
+                <div class="field-group">
+                    <input type="text" id="noteTitleInput" placeholder="输入标题..." maxlength="100">
+                </div>
+                <div class="field-group">
+                    <div class="md-editor">
+                        <div class="md-toolbar">
+                            <button data-cmd="bold" title="加粗">**B**</button>
+                            <button data-cmd="italic" title="斜体">*I*</button>
+                            <button data-cmd="heading" title="标题"># H</button>
+                            <button data-cmd="link" title="链接">🔗</button>
+                            <button data-cmd="image" title="图片">🖼️</button>
+                            <button data-cmd="ul" title="无序列表">•</button>
+                            <button data-cmd="ol" title="有序列表">1.</button>
+                            <button data-cmd="quote" title="引用">"</button>
+                            <button data-cmd="code" title="代码">&lt;/&gt;</button>
+                            <span class="separator"></span>
+                            <button data-cmd="preview" title="切换预览" id="togglePreviewBtn">👁️ 预览</button>
+                        </div>
+                        <textarea id="noteContentInput" placeholder="支持 Markdown 语法...
+
+**粗体** *斜体* # 标题
+- 列表项
+[链接](url)
+![图片](url)"></textarea>
+                        <div id="notePreview" class="md-preview" style="display:none;"></div>
+                    </div>
+                    <div style="margin-top:6px; font-size:12px; color:#8590a6; display:flex; flex-wrap:wrap; gap:8px;">
+                        <span id="wordCount">0 字</span>
+                        <span>支持 Markdown · 拖拽或 Ctrl+V 粘贴图片</span>
+                    </div>
                 </div>
             </div>
-            <div id="notesList" class="notes-list">加载中...</div>
-        </div>
-    </div>
-    <div class="online-sidebar">
-        <h3>在线成员 (<span id="onlineCount">0</span>)</h3>
-        <div id="onlineList"></div>
-    </div>
-</div>
 
-<!-- 笔记编辑/查看模态框 -->
-<div id="noteModal" class="modal" style="display:none;">
-    <div class="modal-content note-editor">
-        <div class="modal-header">
-            <h3 id="modalTitle">📝 笔记详情</h3>
-            <button class="close-btn" id="closeNoteBtn">&times;</button>
-        </div>
-        <div class="field-group">
-            <label>标题</label>
-            <input type="text" id="noteTitle" placeholder="输入标题...">
-        </div>
-        <div class="field-group">
-            <label>内容</label>
-            <textarea id="noteContent" placeholder="输入笔记内容..."></textarea>
-        </div>
-        <div class="field-group">
-            <label>📂 文件夹</label>
-            <select id="noteFolderSelect">
-                <option value="0">根目录（无文件夹）</option>
-            </select>
-        </div>
-        <div class="field-group">
-            <label>📎 附件</label>
-            <div class="attachments-list" id="attachmentsList">暂无附件</div>
-            <div class="file-input-wrapper">
-                <input type="file" id="noteAttachments" multiple>
+            <!-- 右侧：信息栏（手机端在下方） -->
+            <div class="editor-sidebar">
+                <div class="sidebar-section">
+                    <h4>📂 文件夹</h4>
+                    <select id="editorFolderSelect" class="folder-select">
+                        <option value="0">根目录（无文件夹）</option>
+                    </select>
+                </div>
+
+                <!-- ===== 附件区域（可折叠） ===== -->
+                <div class="sidebar-section attachment-section">
+                    <div class="section-header" id="toggleAttachments">
+                        <h4>📎 附件</h4>
+                        <span class="toggle-icon" id="attachmentToggleIcon">▼</span>
+                    </div>
+                    <div id="attachmentContent">
+                        <div class="attachment-list" id="editorAttachmentList">
+                            <div style="color:#8590a6; font-size:13px; text-align:center; padding:12px;">暂无附件</div>
+                        </div>
+                        <div class="upload-area" id="uploadArea">
+                            <span>📤 点击或拖拽上传</span>
+                            <input type="file" id="fileInput" multiple>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="sidebar-section">
+                    <h4>📊 信息</h4>
+                    <div style="font-size:13px; color:#444; line-height:1.8;">
+                        <div>创建：<span id="infoCreatedAt">-</span></div>
+                        <div>更新：<span id="infoUpdatedAt">-</span></div>
+                        <div>附件：<span id="infoAttachCount">0</span> 个</div>
+                    </div>
+                </div>
             </div>
         </div>
-        <div class="modal-footer">
-            <button class="btn-secondary" id="closeNoteBtn2">取消</button>
-            <button class="btn-primary" id="saveNoteBtn">💾 保存</button>
+    </div>
+</div>
+
+<!-- ===== 文件夹模态框 ===== -->
+<div id="folderModal" class="modal">
+    <div class="modal-content" style="max-width: 480px; max-height: 80vh; border-radius: 16px; padding: 20px; margin: auto;">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
+            <h3 id="folderModalTitle" style="font-size:18px;">📂 新建文件夹</h3>
+            <button id="closeFolderModalBtn" style="background:none;border:none;font-size:24px;cursor:pointer;color:#8590a6;">✕</button>
+        </div>
+        <div id="folderModalSubtitle" style="font-size:13px; color:#8590a6; margin-bottom:12px;"></div>
+        <input type="text" id="folderNameInput" placeholder="输入文件夹名称..." maxlength="50" style="width:100%; padding:10px 14px; border:2px solid #e1e4e8; border-radius:8px; font-size:15px;">
+        <div style="display:flex; justify-content:flex-end; gap:12px; margin-top:16px;">
+            <button id="cancelFolderBtn2" style="padding:8px 20px; border-radius:20px; border:none; background:#f0f2f5; cursor:pointer;">取消</button>
+            <button id="saveFolderBtn" style="padding:8px 20px; border-radius:20px; border:none; background:#0066ff; color:white; cursor:pointer;">确定</button>
         </div>
     </div>
 </div>
 
-<!-- 文件夹模态框（创建/重命名） -->
-<div id="folderModal" class="modal" style="display:none;">
-    <div class="modal-content">
-        <div class="modal-header">
-            <h3 id="folderModalTitle">📂 新建文件夹</h3>
-            <button class="close-btn" id="cancelFolderBtn">&times;</button>
+<!-- ===== 移动笔记模态框 ===== -->
+<div id="moveNoteModal" class="modal">
+    <div class="modal-content" style="max-width: 480px; max-height: 80vh; border-radius: 16px; padding: 20px; margin: auto;">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
+            <h3 style="font-size:18px;">📂 移动笔记</h3>
+            <button id="closeMoveModalBtn" style="background:none;border:none;font-size:24px;cursor:pointer;color:#8590a6;">✕</button>
         </div>
-        <div id="folderModalSubtitle" class="modal-subtitle"></div>
-        <div class="field-group">
-            <label>文件夹名称</label>
-            <input type="text" id="folderNameInput" placeholder="输入名称..." maxlength="50">
-        </div>
-        <div class="modal-footer">
-            <button class="btn-secondary" id="cancelFolderBtn2">取消</button>
-            <button class="btn-primary" id="saveFolderBtn">✅ 确定</button>
-        </div>
-    </div>
-</div>
-
-<!-- 移动笔记模态框 -->
-<div id="moveNoteModal" class="modal" style="display:none;">
-    <div class="modal-content">
-        <div class="modal-header">
-            <h3>📂 移动笔记</h3>
-            <button class="close-btn" id="cancelMoveNoteBtn">&times;</button>
-        </div>
-        <p id="moveNoteInfo" style="margin-bottom:12px; color:#555;"></p>
-        <div class="field-group">
-            <label>目标文件夹</label>
-            <select id="moveFolderSelect"></select>
-        </div>
-        <div class="modal-footer">
-            <button class="btn-secondary" id="cancelMoveNoteBtn2">取消</button>
-            <button class="btn-primary" id="confirmMoveNoteBtn">📂 移动</button>
+        <p id="moveNoteInfo" style="font-size:14px; color:#444; margin-bottom:12px;"></p>
+        <select id="moveFolderSelect" style="width:100%; padding:10px 14px; border:2px solid #e1e4e8; border-radius:8px; font-size:15px;"></select>
+        <div style="display:flex; justify-content:flex-end; gap:12px; margin-top:16px;">
+            <button id="cancelMoveBtn2" style="padding:8px 20px; border-radius:20px; border:none; background:#f0f2f5; cursor:pointer;">取消</button>
+            <button id="confirmMoveBtn" style="padding:8px 20px; border-radius:20px; border:none; background:#0066ff; color:white; cursor:pointer;">移动</button>
         </div>
     </div>
 </div>

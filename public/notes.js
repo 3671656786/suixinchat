@@ -1,6 +1,11 @@
 // public/notes.js
 (function ensureGlobals() {
+    // ========== 确保全局函数可用（使用 common.js 的函数，不再重复定义） ==========
+    // 所有全局函数已在 common.js 中定义，这里不再重复定义
+    // 只需要确保它们存在
+    
     if (typeof window.escapeHtml !== 'function') {
+        console.warn('[notes.js] escapeHtml 未定义，使用备用实现');
         window.escapeHtml = function(text) {
             if (!text) return '';
             var e = {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'};
@@ -8,6 +13,7 @@
         };
     }
     if (typeof window.apiRequest !== 'function') {
+        console.warn('[notes.js] apiRequest 未定义，使用备用实现');
         window.apiRequest = function(url, method, body) {
             var isFormData = typeof FormData !== 'undefined' && body instanceof FormData;
             var options = {
@@ -24,6 +30,7 @@
         };
     }
     if (typeof window.formatFileSize !== 'function') {
+        console.warn('[notes.js] formatFileSize 未定义，使用备用实现');
         window.formatFileSize = function(bytes) {
             if (!bytes) return '0 B';
             var k = 1024;
@@ -45,41 +52,342 @@ var notes = [];
 var socket = null;
 var DEFAULT_AVATAR_URL = 'https://api.dicebear.com/7.x/avataaars/svg?seed=default';
 var expandedFolders = {};
-var isSelecting = false; // 防止重复点击
+var isPreviewMode = false;
+var isViewMode = false;
 
 // DOM 引用
 var notesList = document.getElementById('notesList');
 var newNoteBtn = document.getElementById('newNoteBtn');
-var noteModal = document.getElementById('noteModal');
-var modalTitle = document.getElementById('modalTitle');
-var noteTitle = document.getElementById('noteTitle');
-var noteContent = document.getElementById('noteContent');
-var noteFolderSelect = document.getElementById('noteFolderSelect');
-var noteAttachments = document.getElementById('noteAttachments');
-var attachmentsList = document.getElementById('attachmentsList');
-var closeNoteBtn = document.getElementById('closeNoteBtn');
-var closeNoteBtn2 = document.getElementById('closeNoteBtn2');
-var saveNoteBtn = document.getElementById('saveNoteBtn');
+var refreshListBtn = document.getElementById('refreshListBtn');
+var editorModal = document.getElementById('editorModal');
+var editorModalTitle = document.getElementById('editorModalTitle');
+var closeEditorBtn = document.getElementById('closeEditorBtn');
+var cancelEditorBtn = document.getElementById('cancelEditorBtn');
+var saveEditorBtn = document.getElementById('saveEditorBtn');
+var noteTitleInput = document.getElementById('noteTitleInput');
+var noteContentInput = document.getElementById('noteContentInput');
+var notePreview = document.getElementById('notePreview');
+var togglePreviewBtn = document.getElementById('togglePreviewBtn');
+var editorFolderSelect = document.getElementById('editorFolderSelect');
+var fileInput = document.getElementById('fileInput');
+var uploadArea = document.getElementById('uploadArea');
+var editorAttachmentList = document.getElementById('editorAttachmentList');
+var wordCount = document.getElementById('wordCount');
+var infoCreatedAt = document.getElementById('infoCreatedAt');
+var infoUpdatedAt = document.getElementById('infoUpdatedAt');
+var infoAttachCount = document.getElementById('infoAttachCount');
+
 var folderTree = document.getElementById('folderTree');
 var newFolderBtn = document.getElementById('newFolderBtn');
 var folderModal = document.getElementById('folderModal');
 var folderModalTitle = document.getElementById('folderModalTitle');
 var folderModalSubtitle = document.getElementById('folderModalSubtitle');
 var folderNameInput = document.getElementById('folderNameInput');
-var cancelFolderBtn = document.getElementById('cancelFolderBtn');
+var closeFolderModalBtn = document.getElementById('closeFolderModalBtn');
 var cancelFolderBtn2 = document.getElementById('cancelFolderBtn2');
 var saveFolderBtn = document.getElementById('saveFolderBtn');
 var currentFolderTitle = document.getElementById('currentFolderTitle');
+
 var moveNoteModal = document.getElementById('moveNoteModal');
 var moveNoteInfo = document.getElementById('moveNoteInfo');
 var moveFolderSelect = document.getElementById('moveFolderSelect');
-var cancelMoveNoteBtn = document.getElementById('cancelMoveNoteBtn');
-var cancelMoveNoteBtn2 = document.getElementById('cancelMoveNoteBtn2');
-var confirmMoveNoteBtn = document.getElementById('confirmMoveNoteBtn');
+var closeMoveModalBtn = document.getElementById('closeMoveModalBtn');
+var cancelMoveBtn2 = document.getElementById('cancelMoveBtn2');
+var confirmMoveBtn = document.getElementById('confirmMoveBtn');
+
+var toggleAttachments = document.getElementById('toggleAttachments');
+var attachmentContent = document.getElementById('attachmentContent');
+var toggleIcon = document.getElementById('attachmentToggleIcon');
+var isAttachmentsCollapsed = false;
 
 var editingFolderId = null;
 var creatingFolderParentId = 0;
 var moveNoteId = null;
+
+// ========== 附件折叠功能 ==========
+function isMobile() {
+    return window.innerWidth < 768;
+}
+
+function applyAttachmentState() {
+    if (isMobile()) {
+        var saved = localStorage.getItem('attachmentsCollapsed');
+        if (saved === null) {
+            isAttachmentsCollapsed = true;
+        } else {
+            isAttachmentsCollapsed = saved === 'true';
+        }
+    } else {
+        isAttachmentsCollapsed = false;
+    }
+    updateAttachmentUI();
+}
+
+function updateAttachmentUI() {
+    if (isAttachmentsCollapsed) {
+        attachmentContent.classList.add('collapsed');
+        toggleIcon.textContent = '▶';
+    } else {
+        attachmentContent.classList.remove('collapsed');
+        toggleIcon.textContent = '▼';
+    }
+    localStorage.setItem('attachmentsCollapsed', isAttachmentsCollapsed);
+}
+
+// ========== Markdown 渲染 ==========
+function renderMarkdown(text) {
+    if (!text) return '';
+    try {
+        if (typeof marked !== 'undefined') {
+            marked.setOptions({
+                breaks: true,
+                gfm: true,
+                pedantic: false,
+            });
+            return marked.parse(text);
+        } else {
+            return '<pre>' + window.escapeHtml(text) + '</pre>';
+        }
+    } catch (e) {
+        console.error('Markdown 渲染失败:', e);
+        return '<pre>' + window.escapeHtml(text) + '</pre>';
+    }
+}
+
+function updatePreview() {
+    var raw = noteContentInput.value;
+    notePreview.innerHTML = renderMarkdown(raw);
+    updateWordCount();
+}
+
+function updateWordCount() {
+    var text = noteContentInput.value;
+    var count = text.replace(/\s/g, '').length;
+    wordCount.textContent = count + ' 字';
+}
+
+function togglePreview() {
+    isPreviewMode = !isPreviewMode;
+    if (isPreviewMode) {
+        noteContentInput.style.display = 'none';
+        notePreview.style.display = 'block';
+        togglePreviewBtn.textContent = '✏️ 编辑';
+        updatePreview();
+    } else {
+        noteContentInput.style.display = 'block';
+        notePreview.style.display = 'none';
+        togglePreviewBtn.textContent = '👁️ 预览';
+    }
+}
+
+// ========== 工具栏快捷插入 ==========
+document.querySelector('.md-toolbar')?.addEventListener('click', function(e) {
+    var btn = e.target.closest('button');
+    if (!btn) return;
+    var cmd = btn.dataset.cmd;
+    if (!cmd) return;
+    if (cmd === 'preview') {
+        togglePreview();
+        return;
+    }
+    var textarea = noteContentInput;
+    var start = textarea.selectionStart;
+    var end = textarea.selectionEnd;
+    var val = textarea.value;
+    var before = val.substring(0, start);
+    var selected = val.substring(start, end);
+    var after = val.substring(end);
+    var newText = '';
+    var cursorOffset = 0;
+
+    switch (cmd) {
+        case 'bold':
+            newText = before + '**' + (selected || '粗体文字') + '**' + after;
+            cursorOffset = 2;
+            break;
+        case 'italic':
+            newText = before + '*' + (selected || '斜体文字') + '*' + after;
+            cursorOffset = 1;
+            break;
+        case 'heading':
+            newText = before + '# ' + (selected || '标题') + after;
+            cursorOffset = 2;
+            break;
+        case 'link':
+            newText = before + '[' + (selected || '链接文字') + '](url)' + after;
+            cursorOffset = 1;
+            break;
+        case 'image':
+            newText = before + '![' + (selected || '图片描述') + '](图片url)' + after;
+            cursorOffset = 2;
+            break;
+        case 'ul':
+            newText = before + '- ' + (selected || '列表项') + after;
+            cursorOffset = 2;
+            break;
+        case 'ol':
+            newText = before + '1. ' + (selected || '列表项') + after;
+            cursorOffset = 3;
+            break;
+        case 'quote':
+            newText = before + '> ' + (selected || '引用内容') + after;
+            cursorOffset = 2;
+            break;
+        case 'code':
+            newText = before + '```\n' + (selected || '代码内容') + '\n```' + after;
+            cursorOffset = 4;
+            break;
+        default:
+            return;
+    }
+    textarea.value = newText;
+    var newPos = start + newText.length - after.length + cursorOffset;
+    textarea.selectionStart = textarea.selectionEnd = newPos;
+    textarea.focus();
+    updatePreview();
+    updateWordCount();
+});
+
+// ========== 图片粘贴和拖拽 ==========
+function handleImageUpload(file, callback) {
+    var formData = new FormData();
+    formData.append('files', file);
+    fetch('/api/notes/upload', {
+        method: 'POST',
+        credentials: 'include',
+        body: formData
+    })
+    .then(function(res) { return res.json(); })
+    .then(function(data) {
+        if (data.success && data.attachments && data.attachments.length) {
+            var att = data.attachments[0];
+            currentAttachments.push(att);
+            renderAttachments();
+            if (callback) callback(att.fileUrl);
+        } else {
+            alert('图片上传失败');
+        }
+    })
+    .catch(function(err) {
+        alert('图片上传失败: ' + err.message);
+    });
+}
+
+// 粘贴图片
+noteContentInput.addEventListener('paste', function(e) {
+    var items = e.clipboardData && e.clipboardData.items;
+    if (!items) return;
+    for (var i = 0; i < items.length; i++) {
+        var item = items[i];
+        if (item.kind === 'file' && item.type && item.type.indexOf('image/') !== -1) {
+            e.preventDefault();
+            var file = item.getAsFile();
+            var imgText = '![' + file.name + '](uploading...)';
+            var start = noteContentInput.selectionStart;
+            var val = noteContentInput.value;
+            noteContentInput.value = val.substring(0, start) + imgText + val.substring(start);
+            noteContentInput.selectionStart = noteContentInput.selectionEnd = start + imgText.length;
+            updatePreview();
+            updateWordCount();
+            handleImageUpload(file, function(url) {
+                var newVal = noteContentInput.value;
+                var pos = newVal.indexOf('uploading...)');
+                if (pos !== -1) {
+                    noteContentInput.value = newVal.replace('uploading...)', url + ')');
+                } else {
+                    noteContentInput.value = newVal.replace(/\(uploading\.\.\.\)/g, '(' + url + ')');
+                }
+                updatePreview();
+                updateWordCount();
+            });
+            return;
+        }
+    }
+});
+
+// 拖拽上传
+uploadArea.addEventListener('dragover', function(e) {
+    e.preventDefault();
+    uploadArea.classList.add('dragover');
+});
+uploadArea.addEventListener('dragleave', function(e) {
+    e.preventDefault();
+    uploadArea.classList.remove('dragover');
+});
+uploadArea.addEventListener('drop', function(e) {
+    e.preventDefault();
+    uploadArea.classList.remove('dragover');
+    var files = e.dataTransfer.files;
+    if (files.length) {
+        if (files[0].type && files[0].type.indexOf('image/') !== -1) {
+            var imgText = '![' + files[0].name + '](uploading...)';
+            var start = noteContentInput.selectionStart;
+            var val = noteContentInput.value;
+            noteContentInput.value = val.substring(0, start) + imgText + val.substring(start);
+            noteContentInput.selectionStart = noteContentInput.selectionEnd = start + imgText.length;
+            updatePreview();
+            updateWordCount();
+            handleImageUpload(files[0], function(url) {
+                var newVal = noteContentInput.value;
+                noteContentInput.value = newVal.replace(/\(uploading\.\.\.\)/g, '(' + url + ')');
+                updatePreview();
+                updateWordCount();
+            });
+        } else {
+            var formData = new FormData();
+            for (var i = 0; i < files.length; i++) {
+                formData.append('files', files[i]);
+            }
+            fetch('/api/notes/upload', {
+                method: 'POST',
+                credentials: 'include',
+                body: formData
+            })
+            .then(function(res) { return res.json(); })
+            .then(function(data) {
+                if (data.success) {
+                    for (var j = 0; j < data.attachments.length; j++) {
+                        currentAttachments.push(data.attachments[j]);
+                    }
+                    renderAttachments();
+                    alert('成功上传 ' + data.attachments.length + ' 个附件');
+                }
+            });
+        }
+    }
+});
+uploadArea.addEventListener('click', function() {
+    fileInput.click();
+});
+fileInput.addEventListener('change', function() {
+    var files = Array.from(fileInput.files);
+    if (!files.length) return;
+    if (files.length > 50) {
+        alert('单次最多上传50个文件');
+        fileInput.value = '';
+        return;
+    }
+    var formData = new FormData();
+    for (var i = 0; i < files.length; i++) {
+        formData.append('files', files[i]);
+    }
+    fetch('/api/notes/upload', {
+        method: 'POST',
+        credentials: 'include',
+        body: formData
+    })
+    .then(function(res) { return res.json(); })
+    .then(function(data) {
+        if (data.success) {
+            for (var j = 0; j < data.attachments.length; j++) {
+                currentAttachments.push(data.attachments[j]);
+            }
+            renderAttachments();
+            alert('成功上传 ' + data.attachments.length + ' 个附件');
+        }
+    });
+    fileInput.value = '';
+});
 
 // ========== 加载文件夹 ==========
 function loadFolders() {
@@ -97,6 +405,8 @@ function loadFolders() {
             }
             expandedFolders = newExpanded;
             renderFolderTree();
+            populateFolderSelect(editorFolderSelect);
+            populateFolderSelect(moveFolderSelect);
             return folders;
         }
         return [];
@@ -106,13 +416,11 @@ function loadFolders() {
     });
 }
 
-// ========== 渲染文件夹树 ==========
 function renderFolderTree() {
     var tree = buildFolderTree(folders, 0);
     var html = '<li class="active" data-folder-id="0"><span>📁 全部笔记</span></li>';
     html += renderTreeItems(tree, 0);
     folderTree.innerHTML = html;
-    // 高亮当前选中的文件夹
     var items = folderTree.querySelectorAll('li[data-folder-id]');
     for (var i = 0; i < items.length; i++) {
         var item = items[i];
@@ -123,8 +431,6 @@ function renderFolderTree() {
             item.classList.remove('active');
         }
     }
-    populateFolderSelect(noteFolderSelect);
-    populateFolderSelect(moveFolderSelect);
     if (newFolderBtn) {
         newFolderBtn.style.display = isAdmin ? 'inline-block' : 'none';
     }
@@ -160,7 +466,7 @@ function renderTreeItems(children, level) {
         html += '<span class="folder-name">📁 ' + window.escapeHtml(f.name) + '</span>';
         if (isAdmin) {
             html += '<div class="folder-actions">';
-            html += '<button class="add-folder" data-parent="' + f.id + '" title="新建子文件夹">➕</button>';
+            html += '<button class="add-folder" data-parent="' + f.id + '" title="新建子文件夹">+</button>';
             html += '<button class="rename-folder" data-id="' + f.id + '" data-name="' + window.escapeHtml(f.name) + '" title="重命名">✏️</button>';
             html += '<button class="delete-folder" data-id="' + f.id + '" title="删除">🗑️</button>';
             html += '</div>';
@@ -174,14 +480,9 @@ function renderTreeItems(children, level) {
     return html;
 }
 
-// ========== 使用事件委托处理所有点击 ==========
 folderTree.addEventListener('click', function(e) {
     var target = e.target;
-    
-    // 1. 处理按钮点击（完全阻止冒泡）
     if (target.tagName === 'BUTTON' || target.closest('button')) {
-        e.stopPropagation();
-        e.preventDefault();
         if (target.classList.contains('add-folder')) {
             var parentId = parseInt(target.dataset.parent);
             openFolderModal(null, null, parentId);
@@ -200,71 +501,51 @@ folderTree.addEventListener('click', function(e) {
         }
         return;
     }
-    
-    // 2. 处理 toggle 点击（阻止冒泡）
     if (target.classList.contains('folder-toggle')) {
-        e.stopPropagation();
-        e.preventDefault();
         var fid = parseInt(target.dataset.id);
         expandedFolders[fid] = !expandedFolders[fid];
         renderFolderTree();
         return;
     }
-    
-    // 3. 处理文件夹点击 - 找到最近的 li[data-folder-id]
     var li = target.closest('li[data-folder-id]');
     if (!li) return;
-    
-    // 阻止冒泡到父级 li，防止触发两次
-    e.stopPropagation();
-    e.preventDefault();
-    
     var folderId = parseInt(li.dataset.folderId);
-    // 如果点击的是已经选中的文件夹，刷新笔记列表
-    if (folderId === currentFolderId) {
-        loadNotes(folderId);
-        return;
-    }
+    if (folderId === currentFolderId) return;
     selectFolder(folderId);
 });
 
-// ========== 选择文件夹 ==========
 function selectFolder(folderId) {
-    if (isSelecting) return;
-    isSelecting = true;
-    
-    if (folderId === currentFolderId) {
-        isSelecting = false;
-        return;
-    }
-    
+    if (currentFolderId === folderId) return;
     currentFolderId = folderId;
-    updateFolderTitleAndHighlight();
-    loadNotes(folderId);
-    
-    setTimeout(function() {
-        isSelecting = false;
-    }, 100);
-}
-
-// 更新标题和高亮
-function updateFolderTitleAndHighlight() {
-    if (currentFolderId === 0) {
+    if (folderId === 0) {
         currentFolderTitle.textContent = '📁 全部笔记';
     } else {
-        var found = folders.find(function(f) { return f.id === currentFolderId; });
+        var found = folders.find(function(f) { return f.id === folderId; });
         currentFolderTitle.textContent = '📁 ' + (found ? window.escapeHtml(found.name) : '未知文件夹');
     }
     var items = folderTree.querySelectorAll('li[data-folder-id]');
     for (var i = 0; i < items.length; i++) {
         var item = items[i];
         var fid = parseInt(item.dataset.folderId);
-        if (fid === currentFolderId) {
+        if (fid === folderId) {
             item.classList.add('active');
         } else {
             item.classList.remove('active');
         }
     }
+    loadNotes(folderId);
+}
+
+function populateFolderSelect(selectEl) {
+    if (!selectEl) return;
+    var html = '<option value="0">根目录（无文件夹）</option>';
+    var sorted = folders.slice().sort(function(a, b) { return a.parentId - b.parentId || a.name.localeCompare(b.name); });
+    for (var i = 0; i < sorted.length; i++) {
+        var f = sorted[i];
+        var indent = f.parentId === 0 ? '' : '— ';
+        html += '<option value="' + f.id + '">' + indent + window.escapeHtml(f.name) + '</option>';
+    }
+    selectEl.innerHTML = html;
 }
 
 // ========== 加载笔记 ==========
@@ -310,12 +591,13 @@ function renderNotes(notes) {
         html += '  <div class="note-title">' + window.escapeHtml(note.title) + '</div>';
         html += '  <div class="note-meta">';
         html += '    <span>' + new Date(note.createdAt).toLocaleString() + ' by ' + window.escapeHtml(note.creatorName || '管理员') + '</span>';
-        html += '    <span>';
+        html += '    <span class="tags">';
         if (folderName) html += folderName + ' ';
         if (attachCount > 0) html += '📎 ' + attachCount;
         if (isAdmin) {
-            html += ' <button class="delete-note" data-id="' + note.id + '" style="background:none;border:none;color:var(--danger);cursor:pointer;">删除</button>';
-            html += ' <button class="move-note" data-id="' + note.id + '" data-title="' + window.escapeHtml(note.title) + '" style="background:none;border:none;color:var(--primary);cursor:pointer;">📂 移动</button>';
+            html += ' <button class="edit-btn" data-id="' + note.id + '" style="background:none;border:1px solid #0066ff;color:#0066ff;padding:2px 12px;border-radius:12px;font-size:12px;cursor:pointer;">编辑</button>';
+            html += ' <button class="delete-note" data-id="' + note.id + '" style="background:none;border:none;color:#ff4d4f;cursor:pointer;font-size:12px;">删除</button>';
+            html += ' <button class="move-note" data-id="' + note.id + '" data-title="' + window.escapeHtml(note.title) + '" style="background:none;border:none;color:#0066ff;cursor:pointer;font-size:12px;">移动</button>';
         }
         html += '    </span>';
         html += '  </div>';
@@ -325,12 +607,20 @@ function renderNotes(notes) {
     var items = notesList.querySelectorAll('.note-item');
     for (var j = 0; j < items.length; j++) {
         items[j].addEventListener('click', function(e) {
-            if (e.target.classList.contains('delete-note') || e.target.classList.contains('move-note')) return;
+            if (e.target.classList.contains('edit-btn') || e.target.classList.contains('delete-note') || e.target.classList.contains('move-note')) return;
             var id = parseInt(this.dataset.id);
-            openNote(id);
+            openNoteForRead(id);
         });
     }
     if (isAdmin) {
+        var editBtns = notesList.querySelectorAll('.edit-btn');
+        for (var ebt = 0; ebt < editBtns.length; ebt++) {
+            editBtns[ebt].addEventListener('click', function(e) {
+                e.stopPropagation();
+                var id = parseInt(this.dataset.id);
+                openNoteForEdit(id);
+            });
+        }
         var delBtns = notesList.querySelectorAll('.delete-note');
         for (var k = 0; k < delBtns.length; k++) {
             delBtns[k].addEventListener('click', function(e) {
@@ -360,155 +650,146 @@ function renderNotes(notes) {
     }
 }
 
-// ========== 打开笔记 ==========
-function openNote(id) {
+// ========== 阅读模式 ==========
+function openNoteForRead(id) {
     var note = notes.find(function(n) { return n.id === id; });
     if (!note) return;
+    isViewMode = true;
     currentEditId = note.id;
-    noteTitle.value = note.title;
-    noteContent.value = note.content || '';
+    noteTitleInput.value = note.title;
+    noteTitleInput.disabled = true;
+    noteContentInput.value = note.content || '';
+    noteContentInput.disabled = true;
+    noteContentInput.style.display = 'none';
+    notePreview.style.display = 'block';
+    notePreview.innerHTML = renderMarkdown(note.content || '');
+    togglePreviewBtn.style.display = 'none';
+    editorModalTitle.textContent = '📖 ' + note.title;
+    saveEditorBtn.style.display = 'none';
+    var toolbar = document.querySelector('.md-toolbar');
+    if (toolbar) toolbar.style.display = 'none';
+
+    if (isAdmin) {
+        var editReadBtn = document.querySelector('.toolbar-right .edit-read-btn');
+        if (!editReadBtn) {
+            editReadBtn = document.createElement('button');
+            editReadBtn.className = 'btn btn-primary edit-read-btn';
+            editReadBtn.textContent = '✏️ 编辑';
+            editReadBtn.style.marginRight = '8px';
+            var right = document.querySelector('.toolbar-right');
+            if (right) right.prepend(editReadBtn);
+        }
+        editReadBtn.style.display = 'inline-block';
+        editReadBtn.onclick = function() {
+            openNoteForEdit(id);
+        };
+    }
+
     currentAttachments = (note.attachments || []).map(function(att) {
         return { id: att.id, fileUrl: att.fileUrl, fileName: att.fileName, fileType: att.fileType, fileSize: att.fileSize };
     });
-    renderAttachments(currentAttachments);
-    noteAttachments.value = '';
-    noteFolderSelect.value = note.folderId || 0;
+    renderAttachments();
+    editorFolderSelect.value = note.folderId || 0;
+    editorFolderSelect.disabled = true;
+    infoCreatedAt.textContent = new Date(note.createdAt).toLocaleString();
+    infoUpdatedAt.textContent = new Date(note.updatedAt).toLocaleString();
+    infoAttachCount.textContent = currentAttachments.length;
+    updateWordCount();
 
-    var isEditable = isAdmin;
-    modalTitle.innerText = isEditable ? '✏️ 编辑笔记' : '📖 查看笔记';
-    noteTitle.disabled = !isEditable;
-    noteContent.disabled = !isEditable;
-    noteFolderSelect.disabled = !isEditable;
-    noteAttachments.style.display = isEditable ? 'block' : 'none';
-    saveNoteBtn.style.display = isEditable ? 'inline-block' : 'none';
-    var renameBtns = document.querySelectorAll('.rename-attach');
-    var deleteBtns = document.querySelectorAll('.delete-attach');
-    for (var i = 0; i < renameBtns.length; i++) {
-        renameBtns[i].style.display = isEditable ? 'inline-block' : 'none';
+    if (isMobile()) {
+        isAttachmentsCollapsed = true;
+        updateAttachmentUI();
     }
-    for (var j = 0; j < deleteBtns.length; j++) {
-        deleteBtns[j].style.display = isEditable ? 'inline-block' : 'none';
-    }
-    noteModal.style.display = 'flex';
+
+    editorModal.classList.add('active');
+    document.body.style.overflow = 'hidden';
 }
 
-// ========== 渲染附件 ==========
-function renderAttachments(attachments) {
-    if (!attachments || attachments.length === 0) {
-        attachmentsList.innerHTML = '<div style="color:#999; text-align:center; padding:12px;">暂无附件</div>';
-        return;
-    }
-    var html = '';
-    for (var i = 0; i < attachments.length; i++) {
-        var att = attachments[i];
-        var previewUrl = '/api/notes/download/' + att.id + '?preview=true';
-        var downloadUrl = '/api/notes/download/' + att.id;
-        html += '<div class="attachment-item" data-id="' + att.id + '">';
-        html += '  <span>📎 ' + window.escapeHtml(att.fileName) + ' (' + window.formatFileSize(att.fileSize || 0) + ')</span>';
-        html += '  <div class="attachment-actions">';
-        if (isAdmin) {
-            html += '    <button class="rename-attach" data-id="' + att.id + '" data-name="' + window.escapeHtml(att.fileName) + '">重命名</button>';
-        }
-        html += '    <button class="preview-attach" data-url="' + previewUrl + '">预览</button>';
-        html += '    <button class="download-attach" data-url="' + downloadUrl + '" data-name="' + window.escapeHtml(att.fileName) + '">下载</button>';
-        if (isAdmin) {
-            html += '    <button class="delete-attach" data-id="' + att.id + '">删除</button>';
-        }
-        html += '  </div>';
-        html += '</div>';
-    }
-    attachmentsList.innerHTML = html;
-
-    if (isAdmin) {
-        var renameBtns = attachmentsList.querySelectorAll('.rename-attach');
-        for (var r = 0; r < renameBtns.length; r++) {
-            renameBtns[r].addEventListener('click', function() {
-                var id = parseInt(this.dataset.id);
-                var oldName = this.dataset.name;
-                var newName = prompt('请输入新文件名', oldName);
-                if (newName && newName.trim()) {
-                    window.apiRequest('/api/notes/attachment/rename/' + id, 'PUT', { newFileName: newName.trim() }).then(function(res) {
-                        if (res.success) {
-                            var attIndex = currentAttachments.findIndex(function(a) { return a.id === id; });
-                            if (attIndex !== -1) currentAttachments[attIndex].fileName = newName.trim();
-                            renderAttachments(currentAttachments);
-                        } else {
-                            alert(res.message);
-                        }
-                    });
-                }
-            });
-        }
-        var deleteBtns = attachmentsList.querySelectorAll('.delete-attach');
-        for (var d = 0; d < deleteBtns.length; d++) {
-            deleteBtns[d].addEventListener('click', function() {
-                if (confirm('删除附件？')) {
-                    var id = parseInt(this.dataset.id);
-                    window.apiRequest('/api/notes/attachment/' + id, 'DELETE').then(function(res) {
-                        if (res.success) {
-                            currentAttachments = currentAttachments.filter(function(a) { return a.id !== id; });
-                            renderAttachments(currentAttachments);
-                        } else {
-                            alert(res.message);
-                        }
-                    });
-                }
-            });
-        }
-    }
-    var previewBtns = attachmentsList.querySelectorAll('.preview-attach');
-    for (var p = 0; p < previewBtns.length; p++) {
-        previewBtns[p].addEventListener('click', function() {
-            window.open(this.dataset.url, '_blank');
-        });
-    }
-    var downloadBtns = attachmentsList.querySelectorAll('.download-attach');
-    for (var dl = 0; dl < downloadBtns.length; dl++) {
-        downloadBtns[dl].addEventListener('click', function() {
-            var a = document.createElement('a');
-            a.href = this.dataset.url;
-            a.download = this.dataset.name;
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
-        });
-    }
-}
-
-// ========== 新建笔记 ==========
-newNoteBtn.addEventListener('click', function() {
+// ========== 编辑模式 ==========
+function openNoteForEdit(id) {
     if (!isAdmin) return;
-    currentEditId = null;
-    noteTitle.value = '';
-    noteContent.value = '';
-    currentAttachments = [];
-    renderAttachments(currentAttachments);
-    noteAttachments.value = '';
-    noteFolderSelect.value = currentFolderId === 0 ? 0 : currentFolderId;
-    modalTitle.innerText = '✏️ 新建笔记';
-    noteTitle.disabled = false;
-    noteContent.disabled = false;
-    noteFolderSelect.disabled = false;
-    noteAttachments.style.display = 'block';
-    saveNoteBtn.style.display = 'inline-block';
-    noteModal.style.display = 'flex';
-});
+    isViewMode = false;
+    var note = id ? notes.find(function(n) { return n.id === id; }) : null;
+    currentEditId = id || null;
+    noteTitleInput.value = note ? note.title : '';
+    noteTitleInput.disabled = false;
+    noteContentInput.value = note ? note.content || '' : '';
+    noteContentInput.disabled = false;
+    noteContentInput.style.display = 'block';
+    notePreview.style.display = 'none';
+    togglePreviewBtn.style.display = 'inline-block';
+    editorModalTitle.textContent = note ? '✏️ 编辑笔记' : '✏️ 新建笔记';
+    saveEditorBtn.style.display = 'inline-block';
+    var toolbar = document.querySelector('.md-toolbar');
+    if (toolbar) toolbar.style.display = 'flex';
+
+    var editReadBtn = document.querySelector('.toolbar-right .edit-read-btn');
+    if (editReadBtn) editReadBtn.style.display = 'none';
+
+    currentAttachments = note ? (note.attachments || []).map(function(att) {
+        return { id: att.id || undefined, fileUrl: att.fileUrl, fileName: att.fileName, fileType: att.fileType, fileSize: att.fileSize };
+    }) : [];
+    renderAttachments();
+    editorFolderSelect.value = note ? (note.folderId || 0) : (currentFolderId || 0);
+    editorFolderSelect.disabled = false;
+    infoCreatedAt.textContent = note ? new Date(note.createdAt).toLocaleString() : '-';
+    infoUpdatedAt.textContent = note ? new Date(note.updatedAt).toLocaleString() : '-';
+    infoAttachCount.textContent = currentAttachments.length;
+    updateWordCount();
+    updatePreview();
+
+    if (isMobile()) {
+        isAttachmentsCollapsed = false;
+        updateAttachmentUI();
+    }
+
+    editorModal.classList.add('active');
+    document.body.style.overflow = 'hidden';
+    if (!note) {
+        noteTitleInput.focus();
+    }
+}
+
+function closeEditor() {
+    editorModal.classList.remove('active');
+    document.body.style.overflow = '';
+    isViewMode = false;
+    noteTitleInput.disabled = false;
+    noteContentInput.disabled = false;
+    saveEditorBtn.style.display = 'inline-block';
+    togglePreviewBtn.style.display = 'inline-block';
+    var toolbar = document.querySelector('.md-toolbar');
+    if (toolbar) toolbar.style.display = 'flex';
+    editorFolderSelect.disabled = false;
+    noteContentInput.style.display = 'block';
+    notePreview.style.display = 'none';
+    isPreviewMode = false;
+    togglePreviewBtn.textContent = '👁️ 预览';
+    var editReadBtn = document.querySelector('.toolbar-right .edit-read-btn');
+    if (editReadBtn) editReadBtn.style.display = 'none';
+    loadNotes();
+    loadFolders();
+}
+
+closeEditorBtn.addEventListener('click', closeEditor);
+cancelEditorBtn.addEventListener('click', closeEditor);
 
 // ========== 保存笔记 ==========
-saveNoteBtn.addEventListener('click', function() {
+saveEditorBtn.addEventListener('click', function() {
     if (!isAdmin) return;
-    var title = noteTitle.value.trim();
+    var title = noteTitleInput.value.trim();
     if (!title) {
         alert('请输入标题');
         return;
     }
-    var folderId = parseInt(noteFolderSelect.value) || 0;
+    var folderId = parseInt(editorFolderSelect.value) || 0;
+    var content = noteContentInput.value;
     var attachmentsToSave = currentAttachments.map(function(att) {
         return { id: att.id || undefined, fileUrl: att.fileUrl, fileName: att.fileName, fileType: att.fileType, fileSize: att.fileSize };
     });
     var payload = {
         title: title,
-        content: noteContent.value,
+        content: content,
         attachments: attachmentsToSave,
         folderId: folderId
     };
@@ -516,9 +797,7 @@ saveNoteBtn.addEventListener('click', function() {
     var method = currentEditId ? 'PUT' : 'POST';
     window.apiRequest(url, method, payload).then(function(res) {
         if (res.success) {
-            noteModal.style.display = 'none';
-            loadNotes();
-            loadFolders();
+            closeEditor();
         } else {
             alert(res.message || '保存失败');
         }
@@ -527,65 +806,101 @@ saveNoteBtn.addEventListener('click', function() {
     });
 });
 
-// ========== 关闭笔记模态框 ==========
-function closeNoteModal() {
-    noteModal.style.display = 'none';
-}
-closeNoteBtn.addEventListener('click', closeNoteModal);
-closeNoteBtn2.addEventListener('click', closeNoteModal);
-
-// ========== 上传附件 ==========
-var MAX_ATTACHMENTS_PER_UPLOAD = 50;
-noteAttachments.addEventListener('change', function(e) {
-    if (!isAdmin) {
-        alert('仅管理员可上传附件');
-        noteAttachments.value = '';
+// ========== 渲染附件（修复 #11: 单一函数，无重复） ==========
+function renderAttachments() {
+    if (!currentAttachments || currentAttachments.length === 0) {
+        editorAttachmentList.innerHTML = '<div style="color:#8590a6; font-size:13px; text-align:center; padding:12px;">暂无附件</div>';
+        infoAttachCount.textContent = '0';
         return;
     }
-    var files = Array.from(e.target.files);
-    if (files.length === 0) {
-        noteAttachments.value = '';
-        return;
-    }
-    if (files.length > MAX_ATTACHMENTS_PER_UPLOAD) {
-        alert('单次最多上传 ' + MAX_ATTACHMENTS_PER_UPLOAD + ' 个附件，您选择了 ' + files.length + ' 个，请分批上传。');
-        noteAttachments.value = '';
-        return;
-    }
-    var formData = new FormData();
-    for (var i = 0; i < files.length; i++) {
-        formData.append('files', files[i]);
-    }
-    var uploadMsg = document.createElement('div');
-    uploadMsg.style.cssText = 'color:var(--primary); font-size:13px; margin-top:6px;';
-    uploadMsg.textContent = '⏳ 正在上传 ' + files.length + ' 个附件...';
-    var parent = noteAttachments.parentNode;
-    parent.appendChild(uploadMsg);
-
-    fetch('/api/notes/upload', {
-        method: 'POST',
-        credentials: 'include',
-        body: formData
-    })
-    .then(function(response) { return response.json(); })
-    .then(function(res) {
-        if (uploadMsg.parentNode) uploadMsg.parentNode.removeChild(uploadMsg);
-        if (res.success) {
-            for (var j = 0; j < res.attachments.length; j++) {
-                currentAttachments.push(res.attachments[j]);
-            }
-            renderAttachments(currentAttachments);
-            alert('成功上传 ' + res.attachments.length + ' 个附件');
-        } else {
-            alert('上传失败: ' + (res.message || '未知错误'));
+    var html = '';
+    for (var i = 0; i < currentAttachments.length; i++) {
+        var att = currentAttachments[i];
+        var isImage = att.fileType && att.fileType.indexOf('image/') !== -1;
+        var icon = isImage ? '🖼️' : '📄';
+        var previewUrl = '/api/notes/download/' + att.id + '?preview=true';
+        var downloadUrl = '/api/notes/download/' + att.id;
+        html += '<div class="attachment-item" data-id="' + att.id + '">';
+        html += '  <span class="att-icon">' + icon + '</span>';
+        html += '  <div class="att-info">';
+        html += '    <div class="att-name">' + window.escapeHtml(att.fileName) + '</div>';
+        html += '    <div class="att-size">' + window.formatFileSize(att.fileSize || 0) + '</div>';
+        html += '  </div>';
+        html += '  <div class="att-actions">';
+        if (!isViewMode && isAdmin) {
+            html += '    <button class="rename-attach" data-id="' + att.id + '" data-name="' + window.escapeHtml(att.fileName) + '" title="重命名">✏️</button>';
         }
-        noteAttachments.value = '';
-    })
-    .catch(function(err) {
-        if (uploadMsg.parentNode) uploadMsg.parentNode.removeChild(uploadMsg);
-        alert('上传失败: ' + err.message);
-        noteAttachments.value = '';
+        html += '    <button class="preview-attach" data-url="' + previewUrl + '" title="预览">👁️</button>';
+        html += '    <button class="download-attach" data-url="' + downloadUrl + '" data-name="' + window.escapeHtml(att.fileName) + '" title="下载">⬇️</button>';
+        if (!isViewMode && isAdmin) {
+            html += '    <button class="delete-attach" data-id="' + att.id + '" title="删除" class="delete-btn">✕</button>';
+        }
+        html += '  </div>';
+        html += '</div>';
+    }
+    editorAttachmentList.innerHTML = html;
+    infoAttachCount.textContent = currentAttachments.length;
+
+    if (!isViewMode && isAdmin) {
+        document.querySelectorAll('.rename-attach').forEach(function(btn) {
+            btn.addEventListener('click', function() {
+                var id = parseInt(this.dataset.id);
+                var oldName = this.dataset.name;
+                var newName = prompt('请输入新文件名', oldName);
+                if (newName && newName.trim()) {
+                    window.apiRequest('/api/notes/attachment/rename/' + id, 'PUT', { newFileName: newName.trim() }).then(function(res) {
+                        if (res.success) {
+                            var attIndex = currentAttachments.findIndex(function(a) { return a.id === id; });
+                            if (attIndex !== -1) currentAttachments[attIndex].fileName = newName.trim();
+                            renderAttachments();
+                        } else {
+                            alert(res.message);
+                        }
+                    });
+                }
+            });
+        });
+        document.querySelectorAll('.delete-attach').forEach(function(btn) {
+            btn.addEventListener('click', function() {
+                if (confirm('删除附件？')) {
+                    var id = parseInt(this.dataset.id);
+                    window.apiRequest('/api/notes/attachment/' + id, 'DELETE').then(function(res) {
+                        if (res.success) {
+                            currentAttachments = currentAttachments.filter(function(a) { return a.id !== id; });
+                            renderAttachments();
+                        } else {
+                            alert(res.message);
+                        }
+                    });
+                }
+            });
+        });
+    }
+    document.querySelectorAll('.preview-attach').forEach(function(btn) {
+        btn.addEventListener('click', function() {
+            window.open(this.dataset.url, '_blank');
+        });
     });
+    document.querySelectorAll('.download-attach').forEach(function(btn) {
+        btn.addEventListener('click', function() {
+            var a = document.createElement('a');
+            a.href = this.dataset.url;
+            a.download = this.dataset.name;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+        });
+    });
+}
+
+// ========== 新建笔记 ==========
+newNoteBtn.addEventListener('click', function() {
+    if (!isAdmin) return;
+    openNoteForEdit(null);
+});
+
+refreshListBtn.addEventListener('click', function() {
+    loadNotes();
 });
 
 // ========== 文件夹操作 ==========
@@ -611,15 +926,17 @@ function openFolderModal(id, name, parentId) {
         folderModalSubtitle.textContent = '';
         folderNameInput.value = name;
     }
-    folderModal.style.display = 'flex';
+    folderModal.classList.add('active');
+    document.body.style.overflow = 'hidden';
     folderNameInput.focus();
     folderNameInput.select();
 }
 
 function closeFolderModal() {
-    folderModal.style.display = 'none';
+    folderModal.classList.remove('active');
+    document.body.style.overflow = '';
 }
-cancelFolderBtn.addEventListener('click', closeFolderModal);
+closeFolderModalBtn.addEventListener('click', closeFolderModal);
 cancelFolderBtn2.addEventListener('click', closeFolderModal);
 
 saveFolderBtn.addEventListener('click', function() {
@@ -675,7 +992,7 @@ function deleteFolder(id) {
     });
 }
 
-// ========== 移动笔记模态框 ==========
+// ========== 移动笔记 ==========
 function openMoveNoteModal(id, title) {
     moveNoteId = id;
     moveNoteInfo.textContent = '移动笔记: "' + title + '"';
@@ -686,16 +1003,18 @@ function openMoveNoteModal(id, title) {
     } else {
         moveFolderSelect.value = 0;
     }
-    moveNoteModal.style.display = 'flex';
+    moveNoteModal.classList.add('active');
+    document.body.style.overflow = 'hidden';
 }
 
 function closeMoveNoteModal() {
-    moveNoteModal.style.display = 'none';
+    moveNoteModal.classList.remove('active');
+    document.body.style.overflow = '';
 }
-cancelMoveNoteBtn.addEventListener('click', closeMoveNoteModal);
-cancelMoveNoteBtn2.addEventListener('click', closeMoveNoteModal);
+closeMoveModalBtn.addEventListener('click', closeMoveNoteModal);
+cancelMoveBtn2.addEventListener('click', closeMoveNoteModal);
 
-confirmMoveNoteBtn.addEventListener('click', function() {
+confirmMoveBtn.addEventListener('click', function() {
     if (!isAdmin) return;
     var folderId = parseInt(moveFolderSelect.value) || 0;
     window.apiRequest('/api/notes/' + moveNoteId + '/move', 'PUT', { folderId: folderId }).then(function(res) {
@@ -709,18 +1028,26 @@ confirmMoveNoteBtn.addEventListener('click', function() {
     });
 });
 
-// ========== 填充文件夹下拉 ==========
-function populateFolderSelect(selectEl) {
-    if (!selectEl) return;
-    var html = '<option value="0">根目录（无文件夹）</option>';
-    var sorted = folders.slice().sort(function(a, b) { return a.parentId - b.parentId || a.name.localeCompare(b.name); });
-    for (var i = 0; i < sorted.length; i++) {
-        var f = sorted[i];
-        var indent = f.parentId === 0 ? '' : '— ';
-        html += '<option value="' + f.id + '">' + indent + window.escapeHtml(f.name) + '</option>';
-    }
-    selectEl.innerHTML = html;
+// ========== 附件折叠事件绑定 ==========
+if (toggleAttachments) {
+    toggleAttachments.addEventListener('click', function(e) {
+        if (e.target.closest('button')) return;
+        if (!isMobile()) return;
+        isAttachmentsCollapsed = !isAttachmentsCollapsed;
+        updateAttachmentUI();
+    });
 }
+
+window.addEventListener('resize', function() {
+    var wasMobile = isMobile();
+    if (!wasMobile && attachmentContent.classList.contains('collapsed')) {
+        isAttachmentsCollapsed = false;
+        updateAttachmentUI();
+    } else if (wasMobile && !attachmentContent.classList.contains('collapsed') && localStorage.getItem('attachmentsCollapsed') === null) {
+        isAttachmentsCollapsed = true;
+        updateAttachmentUI();
+    }
+});
 
 // ========== Socket ==========
 function initSocket() {
@@ -728,22 +1055,10 @@ function initSocket() {
     window.socket = socket;
     socket.on('connect', function() {
         socket.emit('update status', 'notes');
+        // 心跳由 common.js 自动处理
     });
     socket.on('online users status', function(users) {
-        var container = document.getElementById('onlineList');
-        var countSpan = document.getElementById('onlineCount');
-        if (!container) return;
-        container.innerHTML = '';
-        countSpan.innerText = users.length;
-        for (var i = 0; i < users.length; i++) {
-            var u = users[i];
-            var div = document.createElement('div');
-            div.className = 'online-user';
-            var statusIcon = u.status === 'chat' ? '💬' : (u.status === 'files' ? '📁' : '📝');
-            var av = u.avatarUrl || DEFAULT_AVATAR_URL;
-            div.innerHTML = '<img src="' + window.escapeHtml(av) + '"><span>' + window.escapeHtml(u.username) + ' ' + statusIcon + '</span>';
-            container.appendChild(div);
-        }
+        // 无在线列表，忽略
     });
     socket.on('kicked', function(reason) {
         alert(reason);
@@ -767,6 +1082,7 @@ function initSocket() {
                 newFolderBtn.classList.remove('hidden');
             }
             initSocket();
+            applyAttachmentState();
             loadFolders().then(function() {
                 return loadNotes(0);
             }).then(function() {

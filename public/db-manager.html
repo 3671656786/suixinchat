@@ -21,6 +21,29 @@
             margin-bottom: 20px;
             flex-wrap: wrap;
         }
+        .db-tabs {
+            display: flex;
+            gap: 12px;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+        }
+        .db-tab-btn {
+            padding: 8px 16px;
+            background: none;
+            border: none;
+            border-radius: 40px;
+            cursor: pointer;
+        }
+        .db-tab-btn.active {
+            background: var(--primary);
+            color: white;
+        }
+        .db-tab {
+            display: none;
+        }
+        .db-tab.active {
+            display: block;
+        }
         .table-list {
             width: 200px;
             float: left;
@@ -76,6 +99,48 @@
             margin-top: 20px;
             color: var(--primary);
         }
+        .modify-area {
+            background: #f9f9f9;
+            padding: 16px;
+            border-radius: 16px;
+            margin-top: 20px;
+        }
+        .modify-area textarea {
+            width: 100%;
+            height: 80px;
+            font-family: monospace;
+            padding: 8px;
+            margin-bottom: 8px;
+        }
+        .modify-area .status-list {
+            max-height: 300px;
+            overflow-y: auto;
+        }
+        .modify-area .status-item {
+            padding: 8px;
+            border-bottom: 1px solid #eee;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .badge-approved {
+            color: #2e7d32;
+            background: #e8f5e9;
+            padding: 2px 10px;
+            border-radius: 12px;
+        }
+        .badge-pending {
+            color: #e65100;
+            background: #fff3e0;
+            padding: 2px 10px;
+            border-radius: 12px;
+        }
+        .badge-executed {
+            color: #0d47a1;
+            background: #e3f2fd;
+            padding: 2px 10px;
+            border-radius: 12px;
+        }
         @media (max-width: 768px) {
             .table-list {
                 width: 100%;
@@ -97,15 +162,42 @@
         <h1>🗄️ 数据库管理</h1>
         <button id="logoutDbBtn" class="btn-secondary">退出登录</button>
     </div>
-    <div class="table-list" id="tableList"></div>
-    <div class="db-content">
-        <div class="query-area">
-            <h3>执行 SQL 查询（仅 SELECT）</h3>
-            <textarea id="sqlInput" placeholder="SELECT * FROM users LIMIT 10"></textarea>
-            <button id="executeQueryBtn" class="btn">执行</button>
-        </div>
-        <div id="tableData" class="result-table"></div>
+    <div class="db-tabs">
+        <button class="db-tab-btn active" data-tab="query">📊 查询</button>
+        <button class="db-tab-btn" data-tab="modify">✏️ 申请修改</button>
     </div>
+
+    <!-- 查询标签页 -->
+    <div id="queryTab" class="db-tab active">
+        <div class="table-list" id="tableList"></div>
+        <div class="db-content">
+            <div class="query-area">
+                <h3>执行 SQL 查询（仅 SELECT）</h3>
+                <textarea id="sqlInput" placeholder="SELECT * FROM users LIMIT 10"></textarea>
+                <button id="executeQueryBtn" class="btn">执行</button>
+            </div>
+            <div id="tableData" class="result-table"></div>
+        </div>
+    </div>
+
+    <!-- 修改申请标签页 -->
+    <div id="modifyTab" class="db-tab">
+        <h3>✏️ 申请数据库修改（文件审核方式）</h3>
+        <div class="modify-area">
+            <p>输入需要执行的 SQL（只允许 UPDATE/INSERT/DELETE，禁止 DROP/TRUNCATE/ALTER）</p>
+            <textarea id="modifySql" placeholder="UPDATE users SET username = 'new_name' WHERE userId = 1;"></textarea>
+            <button id="requestModifyBtn" class="btn-primary">📝 生成申请文件</button>
+            <div id="modifyResult" style="margin-top:8px;"></div>
+        </div>
+        <div class="modify-area">
+            <h4>已创建的申请文件</h4>
+            <button id="refreshModifyFilesBtn" class="btn-secondary">🔄 刷新列表</button>
+            <button id="applyModifyBtn" class="btn-primary" style="margin-left:12px;">✅ 应用已批准修改</button>
+            <div id="modifyFileList" class="status-list"></div>
+            <div id="applyResult" style="margin-top:8px;"></div>
+        </div>
+    </div>
+
     <a href="/admin" class="back-link">← 返回管理面板</a>
 </div>
 <script src="db-manager.js"></script>
