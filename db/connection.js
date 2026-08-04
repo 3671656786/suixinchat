@@ -13,7 +13,29 @@ db._waitReady = () => db._readyPromise;
 let pendingOps = [];
 let _db = null;
 
-// ========== 数据库初始化（包装在 async 函数中，避免顶层 await） ==========
+// ========== 在模块加载时立即定义 transaction 方法 ==========
+// 确保 groups.js 加载时就能访问到 db.transaction
+db.transaction = function(fn) {
+    if (typeof fn !== 'function') {
+        throw new Error('db.transaction() 需要传入一个函数');
+    }
+    return function(...args) {
+        if (!_db) {
+            throw new Error('数据库尚未初始化，请稍后重试');
+        }
+        _db.exec('BEGIN TRANSACTION');
+        try {
+            const result = fn(...args);
+            _db.exec('COMMIT');
+            return result;
+        } catch (err) {
+            try { _db.exec('ROLLBACK'); } catch (rollbackErr) {}
+            throw err;
+        }
+    };
+};
+
+// ========== 数据库初始化 ==========
 (async () => {
     try {
         const initSqlJs = require('sql.js');
@@ -25,7 +47,6 @@ let _db = null;
             ? new SQL.Database(fs.readFileSync(DB_PATH))
             : new SQL.Database();
 
-        // 启用 WAL 模式提高并发性能
         _db.run('PRAGMA journal_mode = WAL');
         _db.run('PRAGMA synchronous = NORMAL');
         _db.run('PRAGMA foreign_keys = ON');
@@ -46,22 +67,15 @@ let _db = null;
             try {
                 fs.writeFileSync(DB_PATH, Buffer.from(_db.export()));
                 dirty = false;
-            } catch (e) {
-                // 忽略写入错误
-            }
+            } catch (e) {}
         }
 
         function closeAll() {
             clearTimeout(saveTimer);
             flush();
-            try {
-                _db.close();
-            } catch (e) {
-                // 忽略关闭错误
-            }
+            try { _db.close(); } catch (e) {}
         }
 
-        // 注入数据库方法
         db.pragma = function(str) {
             _db.run('PRAGMA ' + str);
         };
@@ -89,9 +103,7 @@ let _db = null;
                     if (p.length) s.bind(p);
                     try {
                         s.step();
-                    } catch (e) {
-                        // 忽略执行错误
-                    }
+                    } catch (e) {}
                     s.free();
                     markDirty();
                     let lastInsertRowid = null;
@@ -120,9 +132,7 @@ let _db = null;
         for (const op of pendingOps) {
             try {
                 db.exec(op.sql);
-            } catch (e) {
-                // 忽略重放错误
-            }
+            } catch (e) {}
         }
         pendingOps = [];
 
@@ -135,7 +145,6 @@ let _db = null;
 })();
 
 // ========== 在数据库就绪前缓存操作 ==========
-// 如果数据库尚未就绪，将 db.exec 调用暂存
 const originalExec = db.exec;
 db.exec = function _pending(sql) {
     if (_db === null) {

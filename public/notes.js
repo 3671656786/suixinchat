@@ -1,9 +1,5 @@
 // public/notes.js
 (function ensureGlobals() {
-    // ========== 确保全局函数可用（使用 common.js 的函数，不再重复定义） ==========
-    // 所有全局函数已在 common.js 中定义，这里不再重复定义
-    // 只需要确保它们存在
-    
     if (typeof window.escapeHtml !== 'function') {
         console.warn('[notes.js] escapeHtml 未定义，使用备用实现');
         window.escapeHtml = function(text) {
@@ -134,7 +130,27 @@ function updateAttachmentUI() {
     localStorage.setItem('attachmentsCollapsed', isAttachmentsCollapsed);
 }
 
-// ========== Markdown 渲染 ==========
+// ========== 获取视频 MIME 类型 ==========
+function getVideoType(url) {
+    if (!url) return 'video/mp4';
+    var ext = url.split('.').pop().toLowerCase();
+    var types = {
+        'mp4': 'video/mp4',
+        'webm': 'video/webm',
+        'ogg': 'video/ogg',
+        'mov': 'video/quicktime',
+        'avi': 'video/x-msvideo',
+        'mkv': 'video/x-matroska',
+        'm4v': 'video/mp4',
+        '3gp': 'video/3gpp',
+        'wmv': 'video/x-ms-wmv',
+        'mpeg': 'video/mpeg',
+        'flv': 'video/x-flv'
+    };
+    return types[ext] || 'video/mp4';
+}
+
+// ========== Markdown 渲染（稳定回退版） ==========
 function renderMarkdown(text) {
     if (!text) return '';
     try {
@@ -144,7 +160,60 @@ function renderMarkdown(text) {
                 gfm: true,
                 pedantic: false,
             });
-            return marked.parse(text);
+
+            var html = marked.parse(text);
+
+            // ========== 视频文件转 <video> 标签 ==========
+            var videoExtensions = ['mp4', 'webm', 'ogg', 'mov', 'avi', 'mkv', 'flv', 'm4v', '3gp', 'wmv', 'mpeg'];
+            var extPattern = videoExtensions.join('|');
+
+            var imgRegex = new RegExp(
+                '<img[^>]*src="(/uploads/notes_files/[^"]+\\.(' + extPattern + '))"[^>]*>',
+                'gi'
+            );
+
+            html = html.replace(imgRegex, function(match, url, ext) {
+                var altMatch = match.match(/alt="([^"]*)"/);
+                var altText = altMatch ? altMatch[1] : '视频';
+                var videoType = getVideoType(url);
+                return '<video controls style="max-width:100%;max-height:400px;border-radius:8px;margin:8px 0;background:#000;" src="' + url + '" type="' + videoType + '" title="' + window.escapeHtml(altText) + '"></video>';
+            });
+
+            var directVideoRegex = new RegExp(
+                '!\\[([^\\]]*)\\]\\((/uploads/notes_files/[^)]+\\.(' + extPattern + '))(\\s.*?)?\\)',
+                'gi'
+            );
+            html = html.replace(directVideoRegex, function(match, altText, url, ext, title) {
+                var videoType = getVideoType(url);
+                return '<video controls style="max-width:100%;max-height:400px;border-radius:8px;margin:8px 0;background:#000;" src="' + url + '" type="' + videoType + '" title="' + window.escapeHtml(altText || '视频') + '"></video>';
+            });
+
+            // ========== 使用 DOMParser 处理链接（不修改 href） ==========
+            var parser = new DOMParser();
+            var doc = parser.parseFromString(html, 'text/html');
+            var links = doc.querySelectorAll('a');
+            for (var i = 0; i < links.length; i++) {
+                var link = links[i];
+                // 只添加 target 和 rel，不修改 href
+                if (!link.hasAttribute('target')) {
+                    link.setAttribute('target', '_blank');
+                }
+                var rel = link.getAttribute('rel') || '';
+                if (rel.indexOf('noopener') === -1) {
+                    link.setAttribute('rel', (rel ? rel + ' ' : '') + 'noopener noreferrer');
+                }
+                // 关键：不修改 href 值！
+            }
+            
+            // 序列化并提取 body 内容
+            var serializer = new XMLSerializer();
+            var serialized = serializer.serializeToString(doc);
+            var bodyMatch = serialized.match(/<body[^>]*>([\s\S]*)<\/body>/i);
+            if (bodyMatch) {
+                html = bodyMatch[1];
+            }
+
+            return html;
         } else {
             return '<pre>' + window.escapeHtml(text) + '</pre>';
         }
@@ -248,8 +317,8 @@ document.querySelector('.md-toolbar')?.addEventListener('click', function(e) {
     updateWordCount();
 });
 
-// ========== 图片粘贴和拖拽 ==========
-function handleImageUpload(file, callback) {
+// ========== 文件上传处理 ==========
+function handleFileUpload(file, callback) {
     var formData = new FormData();
     formData.append('files', file);
     fetch('/api/notes/upload', {
@@ -261,42 +330,45 @@ function handleImageUpload(file, callback) {
     .then(function(data) {
         if (data.success && data.attachments && data.attachments.length) {
             var att = data.attachments[0];
-            currentAttachments.push(att);
-            renderAttachments();
+            var exists = currentAttachments.some(function(a) { return a.fileUrl === att.fileUrl; });
+            if (!exists) {
+                currentAttachments.push(att);
+                renderAttachments();
+            }
             if (callback) callback(att.fileUrl);
         } else {
-            alert('图片上传失败');
+            alert('文件上传失败: ' + (data.message || '未知错误'));
         }
     })
     .catch(function(err) {
-        alert('图片上传失败: ' + err.message);
+        alert('文件上传失败: ' + err.message);
     });
 }
 
-// 粘贴图片
+// ========== 粘贴图片/视频 ==========
 noteContentInput.addEventListener('paste', function(e) {
     var items = e.clipboardData && e.clipboardData.items;
     if (!items) return;
     for (var i = 0; i < items.length; i++) {
         var item = items[i];
-        if (item.kind === 'file' && item.type && item.type.indexOf('image/') !== -1) {
+        if (item.kind === 'file' && item.type && (item.type.indexOf('image/') !== -1 || item.type.indexOf('video/') !== -1)) {
             e.preventDefault();
             var file = item.getAsFile();
-            var imgText = '![' + file.name + '](uploading...)';
+            var isVideo = item.type.indexOf('video/') !== -1;
+            var marker = isVideo ? '上传视频中...' : '上传图片中...';
+            var imgText = '![' + file.name + '](' + marker + ')';
             var start = noteContentInput.selectionStart;
             var val = noteContentInput.value;
             noteContentInput.value = val.substring(0, start) + imgText + val.substring(start);
             noteContentInput.selectionStart = noteContentInput.selectionEnd = start + imgText.length;
             updatePreview();
             updateWordCount();
-            handleImageUpload(file, function(url) {
+            handleFileUpload(file, function(url) {
                 var newVal = noteContentInput.value;
-                var pos = newVal.indexOf('uploading...)');
-                if (pos !== -1) {
-                    noteContentInput.value = newVal.replace('uploading...)', url + ')');
-                } else {
-                    noteContentInput.value = newVal.replace(/\(uploading\.\.\.\)/g, '(' + url + ')');
-                }
+                var markerPattern = isVideo ? '上传视频中...' : '上传图片中...';
+                var fullMarker = '(' + markerPattern + ')';
+                var fullUrl = '(' + url + ')';
+                noteContentInput.value = newVal.replace(fullMarker, fullUrl);
                 updatePreview();
                 updateWordCount();
             });
@@ -305,7 +377,7 @@ noteContentInput.addEventListener('paste', function(e) {
     }
 });
 
-// 拖拽上传
+// ========== 拖拽上传 ==========
 uploadArea.addEventListener('dragover', function(e) {
     e.preventDefault();
     uploadArea.classList.add('dragover');
@@ -319,17 +391,25 @@ uploadArea.addEventListener('drop', function(e) {
     uploadArea.classList.remove('dragover');
     var files = e.dataTransfer.files;
     if (files.length) {
-        if (files[0].type && files[0].type.indexOf('image/') !== -1) {
-            var imgText = '![' + files[0].name + '](uploading...)';
+        var file = files[0];
+        var isImage = file.type && file.type.indexOf('image/') !== -1;
+        var isVideo = file.type && file.type.indexOf('video/') !== -1;
+        if (isImage || isVideo) {
+            var isVideo = file.type.indexOf('video/') !== -1;
+            var marker = isVideo ? '上传视频中...' : '上传图片中...';
+            var imgText = '![' + file.name + '](' + marker + ')';
             var start = noteContentInput.selectionStart;
             var val = noteContentInput.value;
             noteContentInput.value = val.substring(0, start) + imgText + val.substring(start);
             noteContentInput.selectionStart = noteContentInput.selectionEnd = start + imgText.length;
             updatePreview();
             updateWordCount();
-            handleImageUpload(files[0], function(url) {
+            handleFileUpload(file, function(url) {
                 var newVal = noteContentInput.value;
-                noteContentInput.value = newVal.replace(/\(uploading\.\.\.\)/g, '(' + url + ')');
+                var markerPattern = isVideo ? '上传视频中...' : '上传图片中...';
+                var fullMarker = '(' + markerPattern + ')';
+                var fullUrl = '(' + url + ')';
+                noteContentInput.value = newVal.replace(fullMarker, fullUrl);
                 updatePreview();
                 updateWordCount();
             });
@@ -347,7 +427,10 @@ uploadArea.addEventListener('drop', function(e) {
             .then(function(data) {
                 if (data.success) {
                     for (var j = 0; j < data.attachments.length; j++) {
-                        currentAttachments.push(data.attachments[j]);
+                        var exists = currentAttachments.some(function(a) { return a.fileUrl === data.attachments[j].fileUrl; });
+                        if (!exists) {
+                            currentAttachments.push(data.attachments[j]);
+                        }
                     }
                     renderAttachments();
                     alert('成功上传 ' + data.attachments.length + ' 个附件');
@@ -356,9 +439,12 @@ uploadArea.addEventListener('drop', function(e) {
         }
     }
 });
+
+// ========== 点击上传 ==========
 uploadArea.addEventListener('click', function() {
     fileInput.click();
 });
+
 fileInput.addEventListener('change', function() {
     var files = Array.from(fileInput.files);
     if (!files.length) return;
@@ -380,7 +466,10 @@ fileInput.addEventListener('change', function() {
     .then(function(data) {
         if (data.success) {
             for (var j = 0; j < data.attachments.length; j++) {
-                currentAttachments.push(data.attachments[j]);
+                var exists = currentAttachments.some(function(a) { return a.fileUrl === data.attachments[j].fileUrl; });
+                if (!exists) {
+                    currentAttachments.push(data.attachments[j]);
+                }
             }
             renderAttachments();
             alert('成功上传 ' + data.attachments.length + ' 个附件');
@@ -806,7 +895,7 @@ saveEditorBtn.addEventListener('click', function() {
     });
 });
 
-// ========== 渲染附件（修复 #11: 单一函数，无重复） ==========
+// ========== 渲染附件 ==========
 function renderAttachments() {
     if (!currentAttachments || currentAttachments.length === 0) {
         editorAttachmentList.innerHTML = '<div style="color:#8590a6; font-size:13px; text-align:center; padding:12px;">暂无附件</div>';
@@ -817,7 +906,8 @@ function renderAttachments() {
     for (var i = 0; i < currentAttachments.length; i++) {
         var att = currentAttachments[i];
         var isImage = att.fileType && att.fileType.indexOf('image/') !== -1;
-        var icon = isImage ? '🖼️' : '📄';
+        var isVideo = att.fileType && att.fileType.indexOf('video/') !== -1;
+        var icon = isVideo ? '🎬' : (isImage ? '🖼️' : '📄');
         var previewUrl = '/api/notes/download/' + att.id + '?preview=true';
         var downloadUrl = '/api/notes/download/' + att.id;
         html += '<div class="attachment-item" data-id="' + att.id + '">';
@@ -1055,7 +1145,6 @@ function initSocket() {
     window.socket = socket;
     socket.on('connect', function() {
         socket.emit('update status', 'notes');
-        // 心跳由 common.js 自动处理
     });
     socket.on('online users status', function(users) {
         // 无在线列表，忽略

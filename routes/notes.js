@@ -5,7 +5,6 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs').promises;
 const fsSync = require('fs');
-const { PassThrough } = require('stream');
 const notesDb = require('../db/notesConnection');
 const mainDb = require('../db/connection');
 const { storage, fileFilter } = require('../config/multer');
@@ -14,43 +13,158 @@ const { isLoggedIn } = require('../middleware/auth');
 const { checkNotesBan } = require('../middleware/banCheck');
 const { validateFileType } = require('../utils/fileValidator');
 
-// ========== 辅助函数：循环获取所有子文件夹ID（避免递归堆栈溢出） ==========
+// ========== 调试模式 ==========
+const DEBUG_PATH = process.env.NODE_ENV === 'development';
+
+// ========== 辅助函数：循环获取所有子文件夹ID（防死循环） ==========
 function getAllSubFolderIds(parentId) {
     const allIds = [];
     const queue = [parentId];
+    const visited = new Set();
     while (queue.length > 0) {
         const currentId = queue.shift();
+        if (visited.has(currentId)) continue;
+        visited.add(currentId);
         const children = notesDb.prepare('SELECT id FROM note_folders WHERE parentId = ?').all(currentId);
         for (const child of children) {
-            allIds.push(child.id);
-            queue.push(child.id);
+            if (!visited.has(child.id)) {
+                allIds.push(child.id);
+                queue.push(child.id);
+            }
         }
     }
     return allIds;
 }
 
-// ========== 修复：验证文件路径安全性（移除前导斜杠，防止路径解析错误） ==========
-function isPathSafe(fileUrl) {
-    if (!fileUrl || typeof fileUrl !== 'string') return false;
-    try {
-        // 去除前导斜杠，确保是相对路径（兼容 Windows/Linux/macOS）
-        let relative = fileUrl.replace(/^\/+/, '').replace(/\\/g, '/');
-        // 防止路径遍历攻击
-        const normalized = path.normalize(relative);
-        if (normalized.startsWith('..') || normalized.includes('../')) {
-            return false;
-        }
-        const fullPath = path.resolve(__dirname, '../', normalized);
-        const uploadsDir = path.resolve(__dirname, '../uploads/notes_files');
-        return fullPath.startsWith(uploadsDir);
-    } catch (err) {
-        return false;
+// ========== 核心：统一的路径处理 ==========
+const UPLOADS_NOTES_DIR = path.resolve(__dirname, '../uploads/notes_files');
+
+function getSafeFilePath(fileUrl) {
+    if (!fileUrl || typeof fileUrl !== 'string') {
+        logToFile(`[路径安全] 无效的 fileUrl: ${fileUrl}`);
+        return null;
     }
+
+    try {
+        let filename = fileUrl;
+
+        // 去除前导斜杠
+        filename = filename.replace(/^\/+/, '');
+
+        // 如果路径包含 uploads/notes_files/，提取其后的部分
+        const prefixPattern = /^(uploads\/notes_files\/)/i;
+        if (prefixPattern.test(filename)) {
+            filename = filename.replace(prefixPattern, '');
+        }
+
+        // 如果路径包含 notes_files/，提取其后的部分
+        const shortPattern = /^(notes_files\/)/i;
+        if (shortPattern.test(filename)) {
+            filename = filename.replace(shortPattern, '');
+        }
+
+        // 防止路径遍历
+        if (filename.includes('..')) {
+            logToFile(`[路径安全] 检测到路径遍历: ${fileUrl}`);
+            return null;
+        }
+
+        if (!filename) {
+            logToFile(`[路径安全] 空文件名: ${fileUrl}`);
+            return null;
+        }
+
+        const fullPath = path.join(UPLOADS_NOTES_DIR, filename);
+
+        // 确保路径在 uploads/notes_files 目录下
+        const relativeCheck = path.relative(UPLOADS_NOTES_DIR, fullPath);
+        if (relativeCheck.startsWith('..') || path.isAbsolute(relativeCheck)) {
+            logToFile(`[路径安全] 路径逃逸检测: ${fileUrl} -> ${fullPath}`);
+            return null;
+        }
+
+        if (DEBUG_PATH) {
+            logToFile(`[路径安全] 解析成功: ${fileUrl} -> ${fullPath}`);
+        }
+        return fullPath;
+    } catch (err) {
+        logToFile(`[路径安全] 解析失败: ${fileUrl}, 错误: ${err.message}`);
+        return null;
+    }
+}
+
+function isPathSafe(fileUrl) {
+    return getSafeFilePath(fileUrl) !== null;
 }
 
 // ========== 辅助函数：验证 ID 是否有效 ==========
 function isValidId(id) {
     return id !== undefined && id !== null && !isNaN(parseInt(id)) && parseInt(id) > 0;
+}
+
+// ========== 辅助函数：检查文件是否被 Markdown 引用 ==========
+function isFileReferencedInContent(content, fileUrl) {
+    if (!content || !fileUrl) return false;
+    try {
+        const cleanUrl = fileUrl.split('?')[0].split('#')[0];
+        const escapedUrl = cleanUrl.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const patterns = [
+            new RegExp(`!\\[.*?\\]\\(${escapedUrl}(\\s.*?)?\\)`),
+            new RegExp(`\\[.*?\\]\\(${escapedUrl}(\\s.*?)?\\)`),
+            new RegExp(`<img[^>]*src=["']${escapedUrl}["'][^>]*>`),
+            new RegExp(`<video[^>]*src=["']${escapedUrl}["'][^>]*>`),
+            new RegExp(`<source[^>]*src=["']${escapedUrl}["'][^>]*>`),
+            new RegExp(`src=["']${escapedUrl}["']`)
+        ];
+        return patterns.some(p => p.test(content));
+    } catch (err) {
+        return false;
+    }
+}
+
+// ========== 安全删除文件 ==========
+async function safeDeleteFile(filePath, fileUrl, context) {
+    try {
+        await fs.unlink(filePath);
+        logToFile(`[${context}] 删除物理文件成功: ${fileUrl}`);
+        return { success: true, fileUrl, deleted: true };
+    } catch (err) {
+        if (err.code === 'ENOENT') {
+            logToFile(`[${context}] 物理文件不存在（已删除）: ${fileUrl}`);
+            return { success: true, fileUrl, deleted: false, reason: '文件不存在' };
+        }
+        logToFile(`[${context}] 删除物理文件失败: ${fileUrl}, 错误: ${err.message}`);
+        return { success: false, fileUrl, reason: err.message };
+    }
+}
+
+// ========== 安全删除多个文件 ==========
+async function safeDeleteFiles(fileUrls, context) {
+    const results = [];
+    for (const fileUrl of fileUrls) {
+        const filePath = getSafeFilePath(fileUrl);
+        if (!filePath) {
+            logToFile(`[${context}] 跳过非法路径: ${fileUrl}`);
+            results.push({ fileUrl, success: false, reason: '非法路径' });
+            continue;
+        }
+        const result = await safeDeleteFile(filePath, fileUrl, context);
+        results.push(result);
+    }
+    return results;
+}
+
+// ========== 辅助函数：记录流量 ==========
+function recordTraffic(userId, type, bytes, path, options = {}) {
+    const { ignoreErrors = true } = options;
+    try {
+        mainDb.prepare(`INSERT INTO user_traffic (user_id, type, bytes, path) VALUES (?, ?, ?, ?)`)
+            .run(userId, type, bytes, path);
+    } catch (err) {
+        console.error('[流量记录] 失败:', err);
+        logToFile(`[流量记录] 失败: userId=${userId}, type=${type}, bytes=${bytes}, error=${err.message}`);
+        if (!ignoreErrors) throw err;
+    }
 }
 
 // ========== 笔记文件夹管理 ==========
@@ -78,7 +192,6 @@ router.post('/api/note-folders', isLoggedIn, checkNotesBan, (req, res) => {
     if (name.length > 50) {
         return res.status(400).json({ success: false, message: '名称不能超过50个字符' });
     }
-    // 验证父文件夹是否存在（如果 parentId !== 0）
     if (parentId !== 0) {
         const parentFolder = notesDb.prepare('SELECT id FROM note_folders WHERE id = ?').get(parentId);
         if (!parentFolder) {
@@ -133,7 +246,7 @@ router.put('/api/note-folders/:id', isLoggedIn, checkNotesBan, (req, res) => {
     }
 });
 
-// ========== 删除文件夹（递归 + 事务 + 循环 + 安全异步删除） ==========
+// ========== 删除文件夹 ==========
 router.delete('/api/note-folders/:id', isLoggedIn, checkNotesBan, async (req, res) => {
     const userId = req.userId;
     const user = mainDb.prepare('SELECT role FROM users WHERE userId = ?').get(userId);
@@ -153,80 +266,61 @@ router.delete('/api/note-folders/:id', isLoggedIn, checkNotesBan, async (req, re
             return res.status(400).json({ success: false, message: '不能删除根目录' });
         }
 
-        // 获取所有子文件夹ID（循环，避免递归堆栈溢出）
         const allSubIds = getAllSubFolderIds(folderId);
         const allFolderIds = [folderId, ...allSubIds];
 
-        // 收集所有需要删除的笔记ID
-        const folderPlaceholders = allFolderIds.map(() => '?').join(',');
-        let allNoteIds = [];
-        if (allFolderIds.length > 0) {
-            const notes = notesDb.prepare(`SELECT id FROM notes WHERE folderId IN (${folderPlaceholders})`).all(...allFolderIds);
-            allNoteIds = notes.map(n => n.id);
+        if (allFolderIds.length === 0) {
+            return res.json({ success: true, message: '没有需要删除的文件夹' });
         }
 
-        // 收集所有需要删除的附件路径
+        let allNoteIds = [];
         let allFileUrls = [];
+
+        const folderPlaceholders = allFolderIds.map(() => '?').join(',');
+        const notes = notesDb.prepare(`SELECT id FROM notes WHERE folderId IN (${folderPlaceholders})`).all(...allFolderIds);
+        allNoteIds = notes.map(n => n.id);
+
         if (allNoteIds.length > 0) {
             const notePlaceholders = allNoteIds.map(() => '?').join(',');
             const atts = notesDb.prepare(`SELECT fileUrl FROM note_attachments WHERE noteId IN (${notePlaceholders})`).all(...allNoteIds);
             allFileUrls = atts.map(a => a.fileUrl);
         }
 
-        // 开始事务
         notesDb.exec('BEGIN TRANSACTION');
 
-        // 删除附件记录
         if (allNoteIds.length > 0) {
             const notePlaceholders = allNoteIds.map(() => '?').join(',');
             notesDb.prepare(`DELETE FROM note_attachments WHERE noteId IN (${notePlaceholders})`).run(...allNoteIds);
         }
-        // 删除笔记
         if (allNoteIds.length > 0) {
             const notePlaceholders = allNoteIds.map(() => '?').join(',');
             notesDb.prepare(`DELETE FROM notes WHERE id IN (${notePlaceholders})`).run(...allNoteIds);
         }
-        // 删除文件夹（包括所有子文件夹）
-        const fPlaceholders = allFolderIds.map(() => '?').join(',');
-        notesDb.prepare(`DELETE FROM note_folders WHERE id IN (${fPlaceholders})`).run(...allFolderIds);
+        if (allFolderIds.length > 0) {
+            const fPlaceholders = allFolderIds.map(() => '?').join(',');
+            notesDb.prepare(`DELETE FROM note_folders WHERE id IN (${fPlaceholders})`).run(...allFolderIds);
+        }
 
-        // 提交事务
         notesDb.exec('COMMIT');
 
-        // 事务成功后，异步删除物理文件（带安全保护）
         if (allFileUrls.length > 0) {
-            setImmediate(() => {
-                (async () => {
-                    try {
-                        for (const fileUrl of allFileUrls) {
-                            if (!isPathSafe(fileUrl)) {
-                                console.warn(`[删除文件夹] 跳过非法路径: ${fileUrl}`);
-                                continue;
-                            }
-                            const filePath = path.join(__dirname, '../', fileUrl.replace(/^\/+/, ''));
-                            try {
-                                await fs.unlink(filePath);
-                            } catch (err) {
-                                console.warn(`[删除文件夹] 删除物理文件失败: ${filePath}`, err.message);
-                            }
-                        }
-                    } catch (err) {
-                        console.error('[删除文件夹] 异步删除文件过程中发生异常:', err);
-                    }
-                })();
+            setImmediate(async () => {
+                await safeDeleteFiles(allFileUrls, '删除文件夹');
             });
         }
 
         logToFile(`[笔记] 用户 ${userId} 删除文件夹 ${folderId}，包含 ${allFolderIds.length} 个文件夹，${allNoteIds.length} 个笔记`);
         res.json({ success: true });
     } catch (err) {
-        notesDb.exec('ROLLBACK');
+        try { notesDb.exec('ROLLBACK'); } catch (rollbackErr) {
+            console.error('[删除文件夹] ROLLBACK 失败:', rollbackErr);
+        }
         console.error('删除文件夹失败:', err);
         res.status(500).json({ success: false, message: err.message });
     }
 });
 
-// ========== 移动笔记（使用事务） ==========
+// ========== 移动笔记 ==========
 router.put('/api/notes/:id/move', isLoggedIn, checkNotesBan, (req, res) => {
     const userId = req.userId;
     const user = mainDb.prepare('SELECT role FROM users WHERE userId = ?').get(userId);
@@ -258,7 +352,7 @@ router.put('/api/notes/:id/move', isLoggedIn, checkNotesBan, (req, res) => {
         logToFile(`[笔记] 用户 ${userId} 移动笔记 ${noteId} 到文件夹 ${folderId}`);
         res.json({ success: true });
     } catch (err) {
-        notesDb.exec('ROLLBACK');
+        try { notesDb.exec('ROLLBACK'); } catch (rollbackErr) {}
         console.error('移动笔记失败:', err);
         res.status(500).json({ success: false, message: err.message });
     }
@@ -266,12 +360,12 @@ router.put('/api/notes/:id/move', isLoggedIn, checkNotesBan, (req, res) => {
 
 // ========== 笔记 CRUD ==========
 
-// 上传附件
+// 上传附件（支持图片和视频）
 router.post('/api/notes/upload', isLoggedIn, checkNotesBan, (req, res, next) => {
     const user = mainDb.prepare('SELECT role FROM users WHERE userId = ?').get(req.userId);
     if (!user || user.role !== 'admin') return res.status(403).json({ success: false, message: '仅管理员可上传附件' });
     next();
-}, multer({ storage, fileFilter, limits: { fileSize: 50 * 1024 * 1024 } }).array('files'), (req, res) => {
+}, multer({ storage, fileFilter, limits: { fileSize: 200 * 1024 * 1024 } }).array('files'), (req, res) => {
     if (!req.files || req.files.length === 0) return res.status(400).json({ success: false, message: '未上传文件' });
     for (const file of req.files) {
         const validation = validateFileType(file.path, file.mimetype);
@@ -289,36 +383,27 @@ router.post('/api/notes/upload', isLoggedIn, checkNotesBan, (req, res, next) => 
         fileSize: file.size
     }));
     const user = mainDb.prepare('SELECT username FROM users WHERE userId = ?').get(req.userId);
-    
-    // 批量插入流量记录（使用事务）
-    try {
-        mainDb.exec('BEGIN TRANSACTION');
-        for (const file of req.files) {
-            mainDb.prepare(`INSERT INTO user_traffic (user_id, type, bytes, path) VALUES (?, 'upload', ?, ?)`).run(req.userId, file.size, file.originalname);
-        }
-        mainDb.exec('COMMIT');
-    } catch (err) {
-        mainDb.exec('ROLLBACK');
-        console.error('记录流量失败:', err);
-        // 不阻断上传，只记录日志
+
+    for (const file of req.files) {
+        recordTraffic(req.userId, 'upload', file.size, file.originalname);
     }
-    
+
     logToFile(`[云笔记] 管理员 ${user.username} 上传附件 ${attachments.length} 个文件`);
     res.json({ success: true, attachments });
 });
 
 // 清理临时附件
-router.post('/api/notes/cleanup-temp', isLoggedIn, async (req, res) => {
+router.post('/api/notes/cleanup-temp', isLoggedIn, checkNotesBan, async (req, res) => {
     const user = mainDb.prepare('SELECT role FROM users WHERE userId = ?').get(req.userId);
     if (!user || user.role !== 'admin') return res.status(403).json({ success: false });
     const { fileUrl } = req.body;
     if (!fileUrl) return res.status(400).json({ success: false, message: '缺少文件路径' });
-    
-    if (!isPathSafe(fileUrl)) {
+
+    const filePath = getSafeFilePath(fileUrl);
+    if (!filePath) {
         return res.status(400).json({ success: false, message: '非法文件路径' });
     }
-    
-    const filePath = path.join(__dirname, '../', fileUrl.replace(/^\/+/, ''));
+
     try {
         await fs.access(filePath);
         await fs.unlink(filePath);
@@ -334,10 +419,9 @@ router.post('/api/notes/cleanup-temp', isLoggedIn, async (req, res) => {
     }
 });
 
-// ========== GET /api/notes（优化查询 + 分页限制 + 参数验证） ==========
+// ========== GET /api/notes ==========
 router.get('/api/notes', isLoggedIn, checkNotesBan, (req, res) => {
     const { folderId, limit = 200 } = req.query;
-    // 验证 limit
     let parsedLimit = parseInt(limit);
     if (isNaN(parsedLimit) || parsedLimit < 1) parsedLimit = 200;
     if (parsedLimit > 500) parsedLimit = 500;
@@ -363,7 +447,6 @@ router.get('/api/notes', isLoggedIn, checkNotesBan, (req, res) => {
 
         const notes = notesDb.prepare(sql).all(...params);
 
-        // 批量获取创建者用户名
         const userIds = notes.map(n => n.createdBy).filter(id => id !== null && id !== undefined);
         const userMap = {};
         if (userIds.length > 0) {
@@ -375,24 +458,19 @@ router.get('/api/notes', isLoggedIn, checkNotesBan, (req, res) => {
             }
         }
 
-        // 批量查询附件（分块，避免 IN 子句过长）
         if (notes.length > 0) {
             const noteIds = notes.map(n => n.id);
-            const allAttachments = [];
+            const attachMap = {};
             const chunkSize = 100;
             for (let i = 0; i < noteIds.length; i += chunkSize) {
                 const chunk = noteIds.slice(i, i + chunkSize);
                 const placeholders = chunk.map(() => '?').join(',');
                 const attachSql = `SELECT * FROM note_attachments WHERE noteId IN (${placeholders})`;
                 const chunkAtts = notesDb.prepare(attachSql).all(...chunk);
-                allAttachments.push(...chunkAtts);
-            }
-            
-            // 按 noteId 分组
-            const attachMap = {};
-            for (const att of allAttachments) {
-                if (!attachMap[att.noteId]) attachMap[att.noteId] = [];
-                attachMap[att.noteId].push(att);
+                for (const att of chunkAtts) {
+                    if (!attachMap[att.noteId]) attachMap[att.noteId] = [];
+                    attachMap[att.noteId].push(att);
+                }
             }
             for (const note of notes) {
                 note.creatorName = userMap[note.createdBy] || '未知用户';
@@ -410,14 +488,13 @@ router.get('/api/notes', isLoggedIn, checkNotesBan, (req, res) => {
     }
 });
 
-// ========== 创建笔记（事务 + 附件验证 + folderId 验证） ==========
+// ========== 创建笔记 ==========
 router.post('/api/notes', isLoggedIn, checkNotesBan, (req, res) => {
     const user = mainDb.prepare('SELECT role, username FROM users WHERE userId = ?').get(req.userId);
     if (!user || user.role !== 'admin') return res.status(403).json({ success: false });
     const { title, content, attachments, folderId = 0 } = req.body;
     if (!title) return res.status(400).json({ success: false, message: '标题不能为空' });
 
-    // 验证 folderId
     if (folderId !== 0) {
         if (!isValidId(folderId)) {
             return res.status(400).json({ success: false, message: '无效的文件夹ID' });
@@ -435,13 +512,12 @@ router.post('/api/notes', isLoggedIn, checkNotesBan, (req, res) => {
                VALUES (?, ?, ?, ?, datetime('now'), datetime('now'))`).run(title, content || '', req.userId, folderId);
         const noteId = result.lastInsertRowid;
 
-        // 插入附件（验证数据）
         let attachCount = 0;
         if (attachments && attachments.length) {
             const stmt = notesDb.prepare(`INSERT INTO note_attachments (noteId, fileUrl, fileName, fileType, fileSize, createdAt) VALUES (?, ?, ?, ?, ?, datetime('now'))`);
             for (const att of attachments) {
                 if (!att.fileUrl || !att.fileName || !isPathSafe(att.fileUrl)) {
-                    console.warn('[创建笔记] 跳过无效附件:', att);
+                    logToFile(`[创建笔记] 跳过无效附件: ${JSON.stringify(att)}`);
                     continue;
                 }
                 stmt.run(noteId, att.fileUrl, att.fileName, att.fileType || null, att.fileSize || 0);
@@ -453,13 +529,13 @@ router.post('/api/notes', isLoggedIn, checkNotesBan, (req, res) => {
         logToFile(`[云笔记] 管理员 ${user.username} 创建笔记 ID:${noteId}，标题:${title}，附件数:${attachCount}`);
         res.json({ success: true });
     } catch (err) {
-        notesDb.exec('ROLLBACK');
+        try { notesDb.exec('ROLLBACK'); } catch (rollbackErr) {}
         console.error('创建笔记失败:', err);
         res.status(500).json({ success: false, message: err.message });
     }
 });
 
-// ========== 更新笔记（async + 附件替换策略 + 事务） ==========
+// ========== 更新笔记（修复：保留所有旧附件） ==========
 router.put('/api/notes/:id', isLoggedIn, checkNotesBan, async (req, res) => {
     const user = mainDb.prepare('SELECT role, username FROM users WHERE userId = ?').get(req.userId);
     if (!user || user.role !== 'admin') return res.status(403).json({ success: false });
@@ -470,7 +546,6 @@ router.put('/api/notes/:id', isLoggedIn, checkNotesBan, async (req, res) => {
     }
     if (!title) return res.status(400).json({ success: false, message: '标题不能为空' });
 
-    // 验证 folderId（如果提供）
     if (folderId !== undefined && folderId !== 0) {
         if (!isValidId(folderId)) {
             return res.status(400).json({ success: false, message: '无效的文件夹ID' });
@@ -481,31 +556,15 @@ router.put('/api/notes/:id', isLoggedIn, checkNotesBan, async (req, res) => {
         }
     }
 
-    // 检查笔记是否存在
     const existingNote = notesDb.prepare('SELECT id FROM notes WHERE id = ?').get(noteId);
     if (!existingNote) {
         return res.status(404).json({ success: false, message: '笔记不存在' });
     }
 
     try {
-        let oldFileUrls = [];
-        let shouldProcessAttachments = false;
-        let isClearAttachments = false;
-
-        // 判断 attachments 字段是否提供
-        if (attachments !== undefined) {
-            shouldProcessAttachments = true;
-            if (Array.isArray(attachments) && attachments.length === 0) {
-                isClearAttachments = true;
-            }
-            // 收集旧附件路径
-            const oldAtts = notesDb.prepare('SELECT fileUrl FROM note_attachments WHERE noteId = ?').all(noteId);
-            oldFileUrls = oldAtts.map(a => a.fileUrl);
-        }
-
         notesDb.exec('BEGIN TRANSACTION');
 
-        // 1. 更新笔记基本信息
+        // 更新笔记基本信息
         let updateFields = 'title = ?, content = ?, updatedAt = datetime("now")';
         const params = [title, content || ''];
         if (folderId !== undefined) {
@@ -515,49 +574,87 @@ router.put('/api/notes/:id', isLoggedIn, checkNotesBan, async (req, res) => {
         params.push(noteId);
         notesDb.prepare(`UPDATE notes SET ${updateFields} WHERE id = ?`).run(...params);
 
-        // 2. 处理附件
-        let newAttachCount = 0;
-        if (shouldProcessAttachments) {
-            // 删除旧附件记录（数据库）
-            notesDb.prepare('DELETE FROM note_attachments WHERE noteId = ?').run(noteId);
+        // ========== 修复：保留所有旧附件 ==========
+        // 获取当前笔记的所有旧附件
+        const oldAtts = notesDb.prepare('SELECT fileUrl, fileName, fileType, fileSize FROM note_attachments WHERE noteId = ?').all(noteId);
+        const oldFileUrls = oldAtts.map(a => a.fileUrl);
 
-            // 插入新附件
-            if (attachments && attachments.length) {
-                const stmt = notesDb.prepare(`INSERT INTO note_attachments (noteId, fileUrl, fileName, fileType, fileSize, createdAt) VALUES (?, ?, ?, ?, ?, datetime('now'))`);
-                for (const att of attachments) {
-                    if (!att.fileUrl || !att.fileName || !isPathSafe(att.fileUrl)) {
-                        console.warn('[更新笔记] 跳过无效附件:', att);
-                        continue;
-                    }
-                    stmt.run(noteId, att.fileUrl, att.fileName, att.fileType || null, att.fileSize || 0);
-                    newAttachCount++;
+        // 构建新附件的 URL 集合（用于去重）
+        const newFileUrls = new Set();
+        if (attachments && attachments.length) {
+            for (const att of attachments) {
+                if (att.fileUrl && isPathSafe(att.fileUrl)) {
+                    newFileUrls.add(att.fileUrl);
                 }
+            }
+        }
+
+        // 找出需要删除的附件：在新附件列表中不存在的旧附件
+        const filesToDelete = [];
+        const filesToKeep = [];
+
+        for (const att of oldAtts) {
+            if (newFileUrls.has(att.fileUrl)) {
+                filesToKeep.push(att);
+            } else {
+                // 检查是否被 Markdown 引用（保护引用文件）
+                if (isFileReferencedInContent(content, att.fileUrl)) {
+                    filesToKeep.push(att);
+                    logToFile(`[更新笔记] 文件被Markdown引用，保留: ${att.fileUrl}`);
+                } else {
+                    filesToDelete.push(att.fileUrl);
+                }
+            }
+        }
+
+        // 清空旧附件，然后重新插入所有需要保留的附件
+        notesDb.prepare('DELETE FROM note_attachments WHERE noteId = ?').run(noteId);
+
+        let newAttachCount = 0;
+
+        // 1. 保留被引用的旧附件
+        if (filesToKeep.length > 0) {
+            const keepStmt = notesDb.prepare(`INSERT INTO note_attachments (noteId, fileUrl, fileName, fileType, fileSize, createdAt) VALUES (?, ?, ?, ?, ?, datetime('now'))`);
+            for (const att of filesToKeep) {
+                keepStmt.run(noteId, att.fileUrl, att.fileName, att.fileType, att.fileSize);
+                newAttachCount++;
+            }
+            logToFile(`[更新笔记] 保留 ${filesToKeep.length} 个旧附件`);
+        }
+
+        // 2. 插入新附件（去重）
+        if (attachments && attachments.length) {
+            const stmt = notesDb.prepare(`INSERT INTO note_attachments (noteId, fileUrl, fileName, fileType, fileSize, createdAt) VALUES (?, ?, ?, ?, ?, datetime('now'))`);
+            for (const att of attachments) {
+                if (!att.fileUrl || !att.fileName || !isPathSafe(att.fileUrl)) {
+                    logToFile(`[更新笔记] 跳过无效附件: ${JSON.stringify(att)}`);
+                    continue;
+                }
+                // 避免重复插入已被保留的附件
+                const alreadyKept = filesToKeep.some(k => k.fileUrl === att.fileUrl);
+                if (alreadyKept) {
+                    continue;
+                }
+                stmt.run(noteId, att.fileUrl, att.fileName, att.fileType || null, att.fileSize || 0);
+                newAttachCount++;
             }
         }
 
         notesDb.exec('COMMIT');
 
-        // 3. 事务提交成功后，删除旧物理文件
-        if (shouldProcessAttachments && oldFileUrls.length > 0) {
-            await Promise.all(oldFileUrls.map(async (fileUrl) => {
-                if (!isPathSafe(fileUrl)) {
-                    console.warn(`[更新笔记] 跳过非法路径: ${fileUrl}`);
-                    return;
-                }
-                const filePath = path.join(__dirname, '../', fileUrl.replace(/^\/+/, ''));
-                try {
-                    await fs.unlink(filePath);
-                } catch (err) {
-                    console.warn(`[更新笔记] 删除物理文件失败: ${filePath}`, err.message);
-                }
-            }));
+        // 3. 删除未被引用的旧文件（异步）
+        if (filesToDelete.length > 0) {
+            logToFile(`[更新笔记] 准备删除 ${filesToDelete.length} 个未被引用的旧文件`);
+            setImmediate(async () => {
+                await safeDeleteFiles(filesToDelete, '更新笔记');
+            });
         }
 
-        const action = isClearAttachments ? '清空' : (shouldProcessAttachments ? '替换' : '保留');
+        const action = attachments !== undefined ? (attachments.length === 0 ? '清空' : '更新') : '保留';
         logToFile(`[云笔记] 管理员 ${user.username} 更新笔记 ID:${noteId}，标题:${title}，附件操作:${action}，新附件数:${newAttachCount}`);
         res.json({ success: true });
     } catch (err) {
-        notesDb.exec('ROLLBACK');
+        try { notesDb.exec('ROLLBACK'); } catch (rollbackErr) {}
         console.error('更新笔记失败:', err);
         res.status(500).json({ success: false, message: err.message });
     }
@@ -572,7 +669,6 @@ router.delete('/api/notes/:id', isLoggedIn, checkNotesBan, async (req, res) => {
         return res.status(400).json({ success: false, message: '无效的笔记ID' });
     }
     try {
-        // 获取附件路径
         const attachments = notesDb.prepare('SELECT fileUrl FROM note_attachments WHERE noteId = ?').all(noteId);
         const fileUrls = attachments.map(a => a.fileUrl);
 
@@ -581,26 +677,16 @@ router.delete('/api/notes/:id', isLoggedIn, checkNotesBan, async (req, res) => {
         notesDb.prepare('DELETE FROM notes WHERE id = ?').run(noteId);
         notesDb.exec('COMMIT');
 
-        // 删除物理文件
         if (fileUrls.length > 0) {
-            await Promise.all(fileUrls.map(async (fileUrl) => {
-                if (!isPathSafe(fileUrl)) {
-                    console.warn(`[删除笔记] 跳过非法路径: ${fileUrl}`);
-                    return;
-                }
-                const filePath = path.join(__dirname, '../', fileUrl.replace(/^\/+/, ''));
-                try {
-                    await fs.unlink(filePath);
-                } catch (err) {
-                    console.warn(`[删除笔记] 删除物理文件失败: ${filePath}`, err.message);
-                }
-            }));
+            setImmediate(async () => {
+                await safeDeleteFiles(fileUrls, '删除笔记');
+            });
         }
 
         logToFile(`[云笔记] 管理员 ${user.username} 删除笔记 ID:${noteId}`);
         res.json({ success: true });
     } catch (err) {
-        notesDb.exec('ROLLBACK');
+        try { notesDb.exec('ROLLBACK'); } catch (rollbackErr) {}
         console.error('删除笔记失败:', err);
         res.status(500).json({ success: false, message: err.message });
     }
@@ -618,25 +704,21 @@ router.delete('/api/notes/attachment/:id', isLoggedIn, checkNotesBan, async (req
         const att = notesDb.prepare('SELECT fileUrl, fileName, noteId FROM note_attachments WHERE id = ?').get(attachmentId);
         if (!att) return res.status(404).json({ success: false, message: '附件不存在' });
 
-        if (!isPathSafe(att.fileUrl)) {
+        const filePath = getSafeFilePath(att.fileUrl);
+        if (!filePath) {
             return res.status(400).json({ success: false, message: '非法文件路径' });
         }
 
-        const filePath = path.join(__dirname, '../', att.fileUrl.replace(/^\/+/, ''));
         notesDb.exec('BEGIN TRANSACTION');
         notesDb.prepare('DELETE FROM note_attachments WHERE id = ?').run(attachmentId);
         notesDb.exec('COMMIT');
 
-        try {
-            await fs.unlink(filePath);
-        } catch (err) {
-            console.warn(`[删除附件] 删除物理文件失败: ${filePath}`, err.message);
-        }
+        const result = await safeDeleteFile(filePath, att.fileUrl, '删除附件');
 
-        logToFile(`[云笔记] 管理员 ${user.username} 删除附件 ID:${attachmentId}，文件名:${att.fileName}，所属笔记:${att.noteId}`);
+        logToFile(`[云笔记] 管理员 ${user.username} 删除附件 ID:${attachmentId}，文件名:${att.fileName}，所属笔记:${att.noteId}，文件删除状态: ${result.success}`);
         res.json({ success: true });
     } catch (err) {
-        notesDb.exec('ROLLBACK');
+        try { notesDb.exec('ROLLBACK'); } catch (rollbackErr) {}
         console.error('删除附件失败:', err);
         res.status(500).json({ success: false, message: err.message });
     }
@@ -650,45 +732,83 @@ router.get('/api/notes/download/:id', isLoggedIn, checkNotesBan, async (req, res
     }
     const att = notesDb.prepare('SELECT fileUrl, fileName, fileType, fileSize FROM note_attachments WHERE id = ?').get(attachmentId);
     if (!att) return res.status(404).json({ success: false, message: '附件不存在' });
-    
-    if (!isPathSafe(att.fileUrl)) {
-        return res.status(400).json({ success: false, message: '非法文件路径' });
+
+    const filePath = getSafeFilePath(att.fileUrl);
+    if (!filePath) {
+        logToFile(`[下载附件] 路径解析失败: ${att.fileUrl}`);
+        return res.status(400).json({
+            success: false,
+            message: '文件路径无效，请重新上传附件',
+            fileMissing: true,
+            attachmentId: attachmentId
+        });
     }
-    
-    const filePath = path.join(__dirname, '../', att.fileUrl.replace(/^\/+/, ''));
+
     try {
-        await fs.access(filePath);
+        let fileStat;
+        try {
+            fileStat = await fs.stat(filePath);
+            logToFile(`[下载附件] 文件存在: ${filePath}, 大小: ${fileStat.size}`);
+        } catch (err) {
+            if (err.code === 'ENOENT') {
+                logToFile(`[下载附件] 文件不存在: ${filePath}`);
+                return res.status(404).json({
+                    success: false,
+                    message: '文件已被删除或丢失，请重新上传',
+                    fileMissing: true,
+                    attachmentId: attachmentId,
+                    fileUrl: att.fileUrl
+                });
+            }
+            logToFile(`[下载附件] 访问文件失败: ${filePath}, 错误: ${err.message}`);
+            return res.status(500).json({
+                success: false,
+                message: '服务器错误，无法访问文件'
+            });
+        }
+
         const user = mainDb.prepare('SELECT username FROM users WHERE userId = ?').get(req.userId);
         const disposition = req.query.preview === 'true' ? 'inline' : 'attachment';
+
+        const safeFilename = att.fileName.replace(/[\x00-\x1f\x7f\\/:*?"<>|]/g, '_');
+        const encodedFilename = encodeURIComponent(att.fileName)
+            .replace(/['()]/g, (char) => '%' + char.charCodeAt(0).toString(16).toUpperCase());
+
+        res.setHeader('Content-Disposition',
+            `${disposition}; filename="${safeFilename}"; filename*=UTF-8''${encodedFilename}`);
+
+        res.setHeader('Content-Length', fileStat.size);
+
         let contentType = att.fileType || 'application/octet-stream';
         if (contentType.startsWith('text/') || att.fileName.match(/\.(txt|md|js|css|html|json|xml)$/i)) {
             contentType = 'text/plain; charset=utf-8';
         }
-        res.setHeader('Content-Disposition', `${disposition}; filename*=UTF-8''${encodeURIComponent(att.fileName)}`);
         res.setHeader('Content-Type', contentType);
-        
-        // 直接 pipe，减少内存占用
+
         const readStream = fsSync.createReadStream(filePath);
         let bytesTransferred = 0, recorded = false;
         const finishRecord = () => {
             if (recorded) return;
             recorded = true;
-            try {
-                mainDb.prepare(`INSERT INTO user_traffic (user_id, type, bytes, path) VALUES (?, 'download', ?, ?)`).run(req.userId, bytesTransferred, att.fileUrl);
-                logToFile(`[云笔记] 用户 ${user.username} ${disposition === 'inline' ? '预览' : '下载'}附件 ID:${attachmentId}，文件名:${att.fileName}，实际传输 ${bytesTransferred} / ${att.fileSize} bytes`);
-            } catch (err) {
-                console.error('[下载附件] 记录流量失败:', err);
+            if (bytesTransferred > 0) {
+                recordTraffic(req.userId, 'download', bytesTransferred, att.fileUrl);
+                logToFile(`[云笔记] 用户 ${user.username} ${disposition === 'inline' ? '预览' : '下载'}附件 ID:${attachmentId}，文件名:${att.fileName}，实际传输 ${bytesTransferred} / ${fileStat.size} bytes`);
             }
         };
         readStream.on('data', (chunk) => { bytesTransferred += chunk.length; });
         readStream.on('end', finishRecord);
-        readStream.on('error', finishRecord);
+        readStream.on('error', (err) => {
+            if (!res.headersSent) {
+                res.status(500).json({ success: false, message: '读取文件失败' });
+            }
+            finishRecord();
+        });
         res.on('finish', finishRecord);
         res.on('close', finishRecord);
         readStream.pipe(res);
     } catch (err) {
-        console.error(`附件不存在: ${filePath}`, err);
-        res.status(500).json({ success: false, message: '文件不存在' });
+        console.error(`下载附件失败: ${att.fileUrl}`, err);
+        res.status(500).json({ success: false, message: '服务器错误' });
     }
 });
 
@@ -710,6 +830,102 @@ router.put('/api/notes/attachment/rename/:id', isLoggedIn, checkNotesBan, async 
     notesDb.prepare('UPDATE note_attachments SET fileName = ? WHERE id = ?').run(cleanName, attachmentId);
     logToFile(`[云笔记] 管理员 ${user.username} 重命名附件 ID:${attachmentId}，原文件名:${att.fileName}，新文件名:${cleanName}`);
     res.json({ success: true });
+});
+
+// ========== 清理孤立的附件记录（管理员工具） ==========
+router.post('/api/notes/cleanup-orphan-attachments', isLoggedIn, checkNotesBan, async (req, res) => {
+    const user = mainDb.prepare('SELECT role, username FROM users WHERE userId = ?').get(req.userId);
+    if (!user || user.role !== 'admin') return res.status(403).json({ success: false });
+
+    try {
+        const allAttachments = notesDb.prepare('SELECT id, fileUrl, fileName, noteId FROM note_attachments').all();
+        const orphanAttachments = [];
+        const fileMissingAttachments = [];
+
+        for (const att of allAttachments) {
+            const note = notesDb.prepare('SELECT id FROM notes WHERE id = ?').get(att.noteId);
+            if (!note) {
+                orphanAttachments.push(att);
+                continue;
+            }
+
+            const filePath = getSafeFilePath(att.fileUrl);
+            if (filePath) {
+                try {
+                    await fs.access(filePath);
+                } catch (err) {
+                    if (err.code === 'ENOENT') {
+                        fileMissingAttachments.push(att);
+                    }
+                }
+            } else {
+                fileMissingAttachments.push(att);
+            }
+        }
+
+        let deletedCount = 0;
+        if (orphanAttachments.length > 0) {
+            notesDb.exec('BEGIN TRANSACTION');
+            for (const att of orphanAttachments) {
+                notesDb.prepare('DELETE FROM note_attachments WHERE id = ?').run(att.id);
+                deletedCount++;
+            }
+            notesDb.exec('COMMIT');
+        }
+
+        res.json({
+            success: true,
+            orphanCount: orphanAttachments.length,
+            deletedCount: deletedCount,
+            fileMissingCount: fileMissingAttachments.length,
+            fileMissing: fileMissingAttachments.map(a => ({ id: a.id, fileName: a.fileName, noteId: a.noteId }))
+        });
+    } catch (err) {
+        try { notesDb.exec('ROLLBACK'); } catch (rollbackErr) {}
+        console.error('清理孤立附件失败:', err);
+        res.status(500).json({ success: false, message: err.message });
+    }
+});
+
+// ========== 标记缺失附件（管理员工具） ==========
+router.post('/api/notes/attachment/:id/mark-missing', isLoggedIn, checkNotesBan, async (req, res) => {
+    const user = mainDb.prepare('SELECT role, username FROM users WHERE userId = ?').get(req.userId);
+    if (!user || user.role !== 'admin') return res.status(403).json({ success: false });
+    const attachmentId = parseInt(req.params.id);
+    if (!isValidId(attachmentId)) {
+        return res.status(400).json({ success: false, message: '无效的附件ID' });
+    }
+
+    try {
+        const att = notesDb.prepare('SELECT fileUrl, fileName, noteId FROM note_attachments WHERE id = ?').get(attachmentId);
+        if (!att) return res.status(404).json({ success: false, message: '附件不存在' });
+
+        const filePath = getSafeFilePath(att.fileUrl);
+        let fileExists = false;
+        if (filePath) {
+            try {
+                await fs.access(filePath);
+                fileExists = true;
+            } catch (err) {
+                // 文件不存在
+            }
+        }
+
+        if (fileExists) {
+            return res.status(400).json({ success: false, message: '文件存在，无需标记' });
+        }
+
+        notesDb.exec('BEGIN TRANSACTION');
+        notesDb.prepare('DELETE FROM note_attachments WHERE id = ?').run(attachmentId);
+        notesDb.exec('COMMIT');
+
+        logToFile(`[云笔记] 管理员 ${user.username} 标记并删除缺失附件 ID:${attachmentId}，文件名:${att.fileName}，所属笔记:${att.noteId}`);
+        res.json({ success: true, message: '已删除缺失的附件记录' });
+    } catch (err) {
+        try { notesDb.exec('ROLLBACK'); } catch (rollbackErr) {}
+        console.error('标记缺失附件失败:', err);
+        res.status(500).json({ success: false, message: err.message });
+    }
 });
 
 module.exports = router;

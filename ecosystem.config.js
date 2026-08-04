@@ -14,11 +14,12 @@ module.exports = {
             error_file: './logs/err.log',
             out_file: './logs/out.log',
             log_file: './logs/combined.log',
-            time: true
-        },
-            error_file: './logs/qqbot-err.log',
-            out_file: './logs/qqbot-out.log',
-            time: true
+            time: true,
+            // 自动重启配置
+            max_memory_restart: '500M',
+            min_uptime: '10s',
+            max_restarts: 10,
+            restart_delay: 4000
         }
     ]
 };

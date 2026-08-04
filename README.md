@@ -2,7 +2,7 @@
 
 随心聊是一款 **功能完整的实时聊天网站**，集聊天室、个人网盘、云笔记、管理后台于一体，采用绿色清新风格设计，支持手机和电脑自适应访问。
 
-> **当前版本：v2.3.0** | 默认界面语言为中文 (简体)。如需修改为英文或其他语言，请参考下方的 [🌐 多语言支持](#-多语言支持) 章节。
+> **当前版本：v2.4.0** | 默认界面语言为中文 (简体)。如需修改为英文或其他语言，请参考下方的 [🌐 多语言支持](#-多语言支持) 章节。
 
 ---
 
@@ -344,7 +344,7 @@ function t(key) {
 
 SuixinChat is a **full-featured real-time chat website** integrating chat rooms, personal cloud storage, cloud notes, and an admin dashboard. It features a fresh green design with responsive mobile and desktop support.
 
-> **Current Version: v2.3.0** | Default interface language is Chinese (Simplified). For instructions on modifying the language, please refer to the [🌐 Internationalization](#-internationalization) section below.
+> **Current Version: v2.4.0** | Default interface language is Chinese (Simplified). For instructions on modifying the language, please refer to the [🌐 Internationalization](#-internationalization) section below.
 
 ---
 
@@ -681,6 +681,19 @@ If this project helps you, please give it a Star!
 ---
 
 ## 更新日志 / Changelog
+
+### v2.4.0 (2026-08-04)
+- ✅ **数据库层增强**：修复 `db.transaction` 方法缺失问题，支持事务操作
+- ✅ **群聊模块重构**：修复 `db.prepare is not a function` 启动错误，新增异步索引初始化
+- ✅ **安全性加固**：修复 SQL 注入风险（字段名白名单验证、参数化查询）
+- ✅ **性能优化**：优化群列表 N+1 查询，添加 Socket 缓存（TTL + 大小限制）
+- ✅ **群管理增强**：新增转让群主功能，完善群解散数据清理
+- ✅ **聊天室体验**：自动滚动到最新消息，切换群聊保持定位
+- ✅ **云笔记修复**：修复 Windows 下附件路径解析问题，支持视频粘贴与播放
+- ✅ **文件上传**：完善事务保护、文件清理、错误分类处理
+- ✅ **PM2 配置**：修复 `ecosystem.config.js` 语法错误
+- ✅ **Session 存储**：启用 SQLite 会话存储（可选），避免 MemoryStore 内存泄漏警告
+- ✅ **代码质量**：统一错误处理，完善日志记录，移除冗余代码
 
 ### v2.3.0 (2026-08-02)
 - ✅ 修复云笔记附件路径验证问题（Windows 下前导斜杠导致路径解析错误，所有附件正常访问）
