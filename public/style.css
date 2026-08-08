@@ -421,3 +421,61 @@ body {
     font-size: 12px;
     align-self: center;
 }
+
+/* ========== 代码块样式（云笔记 Markdown） ========== */
+.code-block-wrapper {
+    margin: 16px 0;
+    border-radius: 8px;
+    overflow: hidden;
+    background: #1e1e1e;
+    border: 1px solid #333;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+}
+
+.code-block-wrapper pre {
+    margin: 0;
+    padding: 14px 18px;
+    overflow-x: auto;
+    background: #1e1e1e;
+    font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+    font-size: 13px;
+    line-height: 1.7;
+    color: #d4d4d4;
+}
+
+.code-block-wrapper code {
+    font-family: inherit;
+    color: inherit;
+    background: transparent;
+    padding: 0;
+}
+
+.copy-code-btn {
+    background: transparent;
+    border: 1px solid #555;
+    color: #ccc;
+    padding: 3px 12px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 12px;
+    transition: all 0.2s;
+}
+
+.copy-code-btn:hover {
+    background: #444;
+    border-color: #888;
+    color: #fff;
+}
+
+.copy-code-btn:active {
+    transform: scale(0.95);
+}
+
+/* 代码块中的语法高亮（可选，使用 highlight.js 风格） */
+.code-block-wrapper .hljs-keyword { color: #569cd6; }
+.code-block-wrapper .hljs-string { color: #ce9178; }
+.code-block-wrapper .hljs-comment { color: #6a9955; }
+.code-block-wrapper .hljs-function { color: #dcdcaa; }
+.code-block-wrapper .hljs-number { color: #b5cea8; }
+.code-block-wrapper .hljs-operator { color: #d4d4d4; }
+.code-block-wrapper .hljs-variable { color: #9cdcfe; }

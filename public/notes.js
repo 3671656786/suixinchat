@@ -3,9 +3,10 @@
     if (typeof window.escapeHtml !== 'function') {
         console.warn('[notes.js] escapeHtml 未定义，使用备用实现');
         window.escapeHtml = function(text) {
-            if (!text) return '';
-            var e = {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'};
-            return text.replace(/[&<>"']/g, function(m) { return e[m]; });
+            if (text == null) return '';
+            return String(text).replace(/[&<>"']/g, function(m) {
+                return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[m];
+            });
         };
     }
     if (typeof window.apiRequest !== 'function') {
@@ -150,67 +151,152 @@ function getVideoType(url) {
     return types[ext] || 'video/mp4';
 }
 
-// ========== Markdown 渲染（稳定回退版） ==========
+// ========== 代码块复制事件处理 ==========
+function handleCopyCode(e) {
+    var target = e.target;
+    if (target.classList && target.classList.contains('copy-code-btn')) {
+        var codeId = target.getAttribute('data-target');
+        if (!codeId) return;
+        var codeEl = document.getElementById(codeId);
+        if (!codeEl) return;
+
+        var codeText = codeEl.textContent;
+
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(codeText).then(function() {
+                var originalText = target.textContent;
+                target.textContent = '✅ 已复制';
+                setTimeout(function() {
+                    target.textContent = originalText;
+                }, 2000);
+            }).catch(function() {
+                fallbackCopy(codeText, target);
+            });
+        } else {
+            fallbackCopy(codeText, target);
+        }
+    }
+}
+
+function fallbackCopy(text, button) {
+    var textarea = document.createElement('textarea');
+    textarea.value = text;
+    textarea.style.position = 'fixed';
+    textarea.style.opacity = '0';
+    textarea.style.left = '-9999px';
+    document.body.appendChild(textarea);
+    textarea.select();
+    try {
+        document.execCommand('copy');
+        var originalText = button.textContent;
+        button.textContent = '✅ 已复制';
+        setTimeout(function() {
+            button.textContent = originalText;
+        }, 2000);
+    } catch (err) {
+        alert('复制失败，请手动复制');
+    }
+    document.body.removeChild(textarea);
+}
+
+// ========== Markdown 渲染（兼容 marked.js 新旧版本） ==========
 function renderMarkdown(text) {
+    text = (typeof text === 'string') ? text : (text != null ? String(text) : '');
     if (!text) return '';
+
     try {
         if (typeof marked !== 'undefined') {
+            var renderer = new marked.Renderer();
+
+            // ========== 兼容 link 渲染器 ==========
+            renderer.link = function(href, title, text) {
+                // 判断是否为新版 API（第一个参数是对象）
+                if (href && typeof href === 'object' && href.href !== undefined) {
+                    var token = href;
+                    href = token.href || '';
+                    title = token.title || '';
+                    text = token.text || '';
+                    // 如果 text 为空但有 tokens，用 parser 解析
+                    if (!text && token.tokens && this.parser) {
+                        text = this.parser.parseInline(token.tokens);
+                    }
+                }
+                // 确保是字符串
+                href = (typeof href === 'string') ? href : (href != null ? String(href) : '');
+                if (!href) return text || '';
+                title = (typeof title === 'string') ? title : (title != null ? String(title) : '');
+                text = (typeof text === 'string') ? text : (text != null ? String(text) : '');
+                var titleAttr = title ? ' title="' + title.replace(/"/g, '&quot;') + '"' : '';
+                return '<a href="' + href.replace(/"/g, '&quot;') + '"' + titleAttr + ' target="_blank" rel="noopener noreferrer">' + text + '</a>';
+            };
+
+            // ========== 兼容 image 渲染器 ==========
+            renderer.image = function(href, title, text) {
+                if (href && typeof href === 'object' && href.href !== undefined) {
+                    var token = href;
+                    href = token.href || '';
+                    title = token.title || '';
+                    text = token.text || '';
+                }
+                href = (typeof href === 'string') ? href : (href != null ? String(href) : '');
+                if (!href) return '';
+                title = (typeof title === 'string') ? title : (title != null ? String(title) : '');
+                text = (typeof text === 'string') ? text : (text != null ? String(text) : '');
+                var titleAttr = title ? ' title="' + title.replace(/"/g, '&quot;') + '"' : '';
+                var altText = text || '';
+
+                var videoExtensions = ['mp4', 'webm', 'ogg', 'mov', 'avi', 'mkv', 'flv', 'm4v', '3gp', 'wmv', 'mpeg'];
+                var ext = href.split('.').pop().toLowerCase();
+                if (videoExtensions.indexOf(ext) !== -1) {
+                    var videoType = getVideoType(href);
+                    return '<video controls style="max-width:100%;max-height:400px;border-radius:8px;margin:8px 0;background:#000;" src="' + href.replace(/"/g, '&quot;') + '" type="' + videoType + '"' + titleAttr + '></video>';
+                }
+
+                return '<img src="' + href.replace(/"/g, '&quot;') + '" alt="' + altText.replace(/"/g, '&quot;') + '"' + titleAttr + ' style="max-width:100%;border-radius:8px;">';
+            };
+
+            // ========== 兼容 code 渲染器 ==========
+            renderer.code = function(code, language) {
+                // 新版 API 可能传入一个对象
+                if (code && typeof code === 'object' && code.text !== undefined) {
+                    var token = code;
+                    code = token.text || '';
+                    language = token.lang || '';
+                }
+                try {
+                    code = (typeof code === 'string') ? code : (code != null ? String(code) : '');
+                    var langLabel = language || 'text';
+                    var escapedCode = window.escapeHtml(code);
+                    var codeId = 'code-' + Date.now() + '-' + Math.random().toString(36).substr(2, 6);
+
+                    return '<div class="code-block-wrapper" style="position:relative;margin:12px 0;border-radius:8px;overflow:hidden;background:#1e1e1e;border:1px solid #333;">' +
+                        '<div style="display:flex;justify-content:space-between;align-items:center;padding:6px 12px;background:#2d2d2d;border-bottom:1px solid #444;font-size:12px;color:#999;font-family:monospace;">' +
+                        '<span>' + langLabel + '</span>' +
+                        '<button class="copy-code-btn" data-target="' + codeId + '" style="background:transparent;border:1px solid #555;color:#ccc;padding:2px 10px;border-radius:4px;cursor:pointer;font-size:12px;transition:all 0.2s;">📋 复制</button>' +
+                        '</div>' +
+                        '<pre style="margin:0;padding:12px 16px;overflow-x:auto;background:#1e1e1e;font-family:\'Consolas\',\'Monaco\',monospace;font-size:13px;line-height:1.6;color:#d4d4d4;">' +
+                        '<code id="' + codeId + '" style="font-family:inherit;color:inherit;">' + escapedCode + '</code>' +
+                        '</pre>' +
+                        '</div>';
+                } catch (e) {
+                    console.warn('[renderer.code] 自定义渲染失败，使用默认格式', e);
+                    return '<pre><code>' + window.escapeHtml(code) + '</code></pre>';
+                }
+            };
+
             marked.setOptions({
                 breaks: true,
                 gfm: true,
                 pedantic: false,
+                renderer: renderer
             });
 
             var html = marked.parse(text);
 
-            // ========== 视频文件转 <video> 标签 ==========
-            var videoExtensions = ['mp4', 'webm', 'ogg', 'mov', 'avi', 'mkv', 'flv', 'm4v', '3gp', 'wmv', 'mpeg'];
-            var extPattern = videoExtensions.join('|');
-
-            var imgRegex = new RegExp(
-                '<img[^>]*src="(/uploads/notes_files/[^"]+\\.(' + extPattern + '))"[^>]*>',
-                'gi'
-            );
-
-            html = html.replace(imgRegex, function(match, url, ext) {
-                var altMatch = match.match(/alt="([^"]*)"/);
-                var altText = altMatch ? altMatch[1] : '视频';
-                var videoType = getVideoType(url);
-                return '<video controls style="max-width:100%;max-height:400px;border-radius:8px;margin:8px 0;background:#000;" src="' + url + '" type="' + videoType + '" title="' + window.escapeHtml(altText) + '"></video>';
-            });
-
-            var directVideoRegex = new RegExp(
-                '!\\[([^\\]]*)\\]\\((/uploads/notes_files/[^)]+\\.(' + extPattern + '))(\\s.*?)?\\)',
-                'gi'
-            );
-            html = html.replace(directVideoRegex, function(match, altText, url, ext, title) {
-                var videoType = getVideoType(url);
-                return '<video controls style="max-width:100%;max-height:400px;border-radius:8px;margin:8px 0;background:#000;" src="' + url + '" type="' + videoType + '" title="' + window.escapeHtml(altText || '视频') + '"></video>';
-            });
-
-            // ========== 使用 DOMParser 处理链接（不修改 href） ==========
-            var parser = new DOMParser();
-            var doc = parser.parseFromString(html, 'text/html');
-            var links = doc.querySelectorAll('a');
-            for (var i = 0; i < links.length; i++) {
-                var link = links[i];
-                // 只添加 target 和 rel，不修改 href
-                if (!link.hasAttribute('target')) {
-                    link.setAttribute('target', '_blank');
-                }
-                var rel = link.getAttribute('rel') || '';
-                if (rel.indexOf('noopener') === -1) {
-                    link.setAttribute('rel', (rel ? rel + ' ' : '') + 'noopener noreferrer');
-                }
-                // 关键：不修改 href 值！
-            }
-            
-            // 序列化并提取 body 内容
-            var serializer = new XMLSerializer();
-            var serialized = serializer.serializeToString(doc);
-            var bodyMatch = serialized.match(/<body[^>]*>([\s\S]*)<\/body>/i);
-            if (bodyMatch) {
-                html = bodyMatch[1];
+            var previewEl = document.getElementById('notePreview');
+            if (previewEl) {
+                previewEl.removeEventListener('click', handleCopyCode);
+                previewEl.addEventListener('click', handleCopyCode);
             }
 
             return html;
@@ -222,6 +308,8 @@ function renderMarkdown(text) {
         return '<pre>' + window.escapeHtml(text) + '</pre>';
     }
 }
+
+// ========== 以下为原有的 UI 交互逻辑（保持不变）==========
 
 function updatePreview() {
     var raw = noteContentInput.value;
@@ -249,7 +337,7 @@ function togglePreview() {
     }
 }
 
-// ========== 工具栏快捷插入 ==========
+// 工具栏快捷插入
 document.querySelector('.md-toolbar')?.addEventListener('click', function(e) {
     var btn = e.target.closest('button');
     if (!btn) return;
@@ -478,7 +566,7 @@ fileInput.addEventListener('change', function() {
     fileInput.value = '';
 });
 
-// ========== 加载文件夹 ==========
+// ========== 文件夹与笔记加载 ==========
 function loadFolders() {
     return window.apiRequest('/api/note-folders', 'GET').then(function(res) {
         if (res.success) {
@@ -637,7 +725,6 @@ function populateFolderSelect(selectEl) {
     selectEl.innerHTML = html;
 }
 
-// ========== 加载笔记 ==========
 function loadNotes(folderId) {
     var url = '/api/notes';
     if (folderId !== undefined) {
@@ -661,7 +748,6 @@ function loadNotes(folderId) {
     });
 }
 
-// ========== 渲染笔记列表 ==========
 function renderNotes(notes) {
     if (!notes || notes.length === 0) {
         notesList.innerHTML = '<div class="note-empty">📝 暂无笔记</div>';
@@ -747,11 +833,12 @@ function openNoteForRead(id) {
     currentEditId = note.id;
     noteTitleInput.value = note.title;
     noteTitleInput.disabled = true;
-    noteContentInput.value = note.content || '';
+    var contentStr = (typeof note.content === 'string') ? note.content : (note.content != null ? String(note.content) : '');
+    noteContentInput.value = contentStr;
     noteContentInput.disabled = true;
     noteContentInput.style.display = 'none';
     notePreview.style.display = 'block';
-    notePreview.innerHTML = renderMarkdown(note.content || '');
+    notePreview.innerHTML = renderMarkdown(contentStr);
     togglePreviewBtn.style.display = 'none';
     editorModalTitle.textContent = '📖 ' + note.title;
     saveEditorBtn.style.display = 'none';

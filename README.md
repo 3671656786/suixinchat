@@ -2,7 +2,7 @@
 
 随心聊是一款 **功能完整的实时聊天网站**，集聊天室、个人网盘、云笔记、管理后台于一体，采用绿色清新风格设计，支持手机和电脑自适应访问。
 
-> **当前版本：v2.4.0** | 默认界面语言为中文 (简体)。如需修改为英文或其他语言，请参考下方的 [🌐 多语言支持](#-多语言支持) 章节。
+> **当前版本：v2.5.0** | 默认界面语言为中文 (简体)。如需修改为英文或其他语言，请参考下方的 [🌐 多语言支持](#-多语言支持) 章节。
 
 ---
 
@@ -26,6 +26,7 @@
 - 私聊功能（在线用户私聊，未读红点提醒）
 - 群聊功能（创建群、加入群、群管理）
 - 消息已读回执
+- **聊天室全新UI**（手机端完美适配，群列表和在线用户可展开滚动）
 - **聊天室滚动优化**（打开时自动定位到最新消息，切换群聊自动滚底，向上翻看历史不干扰）
 
 ### 📁 网盘系统
@@ -45,6 +46,7 @@
 - 附件管理（重命名、预览、下载、删除）
 - 笔记文件夹分类（支持多级文件夹，可展开/折叠）
 - **附件路径安全加固**（修复 Windows 下路径验证问题，确保所有附件正常访问）
+- **Markdown 增强**（视频粘贴与播放、代码块一键复制、链接新窗口打开）
 
 ### ⚙️ 管理面板
 - 用户管理（踢出、封禁）
@@ -344,7 +346,7 @@ function t(key) {
 
 SuixinChat is a **full-featured real-time chat website** integrating chat rooms, personal cloud storage, cloud notes, and an admin dashboard. It features a fresh green design with responsive mobile and desktop support.
 
-> **Current Version: v2.4.0** | Default interface language is Chinese (Simplified). For instructions on modifying the language, please refer to the [🌐 Internationalization](#-internationalization) section below.
+> **Current Version: v2.5.0** | Default interface language is Chinese (Simplified). For instructions on modifying the language, please refer to the [🌐 Internationalization](#-internationalization) section below.
 
 ---
 
@@ -368,6 +370,7 @@ SuixinChat is a **full-featured real-time chat website** integrating chat rooms,
 - Private chat (click online user to chat, unread badge)
 - Group chat (create/join/manage groups)
 - Read receipts
+- **Brand new Chat UI** (fully mobile-responsive, expandable group & online user lists)
 - **Chat scroll optimization** (auto-scroll to latest messages on open, switch groups, and send; upward browsing stays intact)
 
 ### 📁 Cloud Storage
@@ -387,6 +390,7 @@ SuixinChat is a **full-featured real-time chat website** integrating chat rooms,
 - Attachment management (rename, preview, download, delete)
 - Note folder classification (multi-level folders with expand/collapse)
 - **Path security hardening** (fixed Windows path validation to ensure all attachments are accessible)
+- **Markdown enhancements** (video paste & playback, code copy button, external links in new window)
 
 ### ⚙️ Admin Panel
 - User management (kick, ban)
@@ -681,6 +685,18 @@ If this project helps you, please give it a Star!
 ---
 
 ## 更新日志 / Changelog
+
+### v2.5.0 (2026-08-08)
+- ✅ **聊天室全新UI**：全面重构聊天室界面，手机端完美适配
+- ✅ **群列表优化**：群聊列表改为纵向滚动，点击标题可展开/收起，所有群组完整显示
+- ✅ **在线用户优化**：在线用户列表纵向滚动，支持展开/收起，完整显示所有在线用户
+- ✅ **私聊窗口修复**：修复关闭按钮失效问题，窗口固定在右下角
+- ✅ **消息体验优化**：新消息淡入动画，打开聊天室自动定位最新消息
+- ✅ **云笔记 Markdown 增强**：支持视频粘贴与播放，代码块一键复制，链接新窗口打开
+- ✅ **云笔记修复**：修复 `[object Object]` 显示异常，修复 Windows 下附件路径解析
+- ✅ **安全性加固**：修复 SQL 注入风险（字段名白名单验证、参数化查询）
+- ✅ **事务处理完善**：修复 `db.transaction` 方法，确保数据一致性
+- ✅ **代码质量**：统一错误处理，完善日志记录，优化性能
 
 ### v2.4.0 (2026-08-04)
 - ✅ **数据库层增强**：修复 `db.transaction` 方法缺失问题，支持事务操作

@@ -1,4 +1,4 @@
-// public/chat.js - 完整版（含滚动优化）
+// public/chat.js - 完整修复版（私聊关闭 + 手机端适配）
 (function ensureGlobals() {
     if (typeof window.escapeHtml !== 'function') {
         window.escapeHtml = function(text) {
@@ -102,6 +102,12 @@ function createGroupSettingsModal() {
         </div>
     `;
     document.body.appendChild(modal);
+    document.getElementById('closeGroupSettingsBtn')?.addEventListener('click', function() {
+        document.getElementById('groupSettingsModal').style.display = 'none';
+    });
+    document.getElementById('closeGroupSettingsBtn2')?.addEventListener('click', function() {
+        document.getElementById('groupSettingsModal').style.display = 'none';
+    });
     return modal;
 }
 
@@ -123,6 +129,12 @@ function createJoinRequestModal() {
         </div>
     `;
     document.body.appendChild(modal);
+    document.getElementById('closeRequestModalBtn')?.addEventListener('click', function() {
+        document.getElementById('joinRequestModal').style.display = 'none';
+    });
+    document.getElementById('closeRequestModalBtn2')?.addEventListener('click', function() {
+        document.getElementById('joinRequestModal').style.display = 'none';
+    });
     return modal;
 }
 
@@ -149,6 +161,12 @@ function createApplyJoinModal() {
         </div>
     `;
     document.body.appendChild(modal);
+    document.getElementById('closeApplyModalBtn')?.addEventListener('click', function() {
+        document.getElementById('applyJoinModal').style.display = 'none';
+    });
+    document.getElementById('cancelApplyBtn')?.addEventListener('click', function() {
+        document.getElementById('applyJoinModal').style.display = 'none';
+    });
     return modal;
 }
 
@@ -174,6 +192,12 @@ function createInviteUserModal() {
         </div>
     `;
     document.body.appendChild(modal);
+    document.getElementById('closeInviteModalBtn')?.addEventListener('click', function() {
+        document.getElementById('inviteUserModal').style.display = 'none';
+    });
+    document.getElementById('cancelInviteBtn')?.addEventListener('click', function() {
+        document.getElementById('inviteUserModal').style.display = 'none';
+    });
     return modal;
 }
 
@@ -215,7 +239,6 @@ function sysMsg(t) {
     d.className = 'system-message';
     d.innerHTML = t;
     messagesArea.appendChild(d);
-    // 系统消息也滚动到底部
     messagesArea.scrollTop = messagesArea.scrollHeight;
 }
 
@@ -324,12 +347,11 @@ function appendMessage(msg, prepend) {
         else messagesArea.prepend(d);
     } else {
         messagesArea.appendChild(d);
-        // 新消息滚动到底部
         messagesArea.scrollTop = messagesArea.scrollHeight;
     }
 }
 
-// ========== 渲染消息列表（修复：滚动到底部） ==========
+// ========== 渲染消息列表 ==========
 function renderMessages(msgs) {
     messagesArea.innerHTML = '<div id="loadingMore">⏳ 加载更早消息...</div>';
     for (var i = 0; i < msgs.length; i++) {
@@ -337,11 +359,10 @@ function renderMessages(msgs) {
     }
     var ld = $('loadingMore');
     if (ld) ld.style.display = 'none';
-    // 加载完成后滚动到底部（最新消息）
     messagesArea.scrollTop = messagesArea.scrollHeight;
 }
 
-// ========== 加载历史消息（保持滚动位置） ==========
+// ========== 加载历史消息 ==========
 async function loadMore() {
     if (isLoadingMore || !hasMoreHistory) return;
     var fm = document.querySelector('.message');
@@ -360,7 +381,6 @@ async function loadMore() {
             for (var i = d.messages.length - 1; i >= 0; i--) {
                 appendMessage(d.messages[i], true);
             }
-            // 保持滚动位置
             messagesArea.scrollTop = oT + (messagesArea.scrollHeight - oH);
             var nf = document.querySelector('.message');
             if (nf) oldestMessageId = nf.dataset.id;
@@ -376,7 +396,7 @@ messagesArea.addEventListener('scroll', function() {
     if (messagesArea.scrollTop === 0 && !isLoadingMore && hasMoreHistory) loadMore();
 });
 
-// ========== 加载历史（修复：滚动到底部） ==========
+// ========== 加载历史 ==========
 async function loadHistory() {
     try {
         var url = currentGroupId === 0 ? '/api/messages?limit=50' : '/api/groups/' + currentGroupId + '/messages?limit=50';
@@ -387,7 +407,6 @@ async function loadHistory() {
             historyLoaded = true;
             hasMoreHistory = d.messages.length === 50;
             sendReads();
-            // 滚动到底部
             messagesArea.scrollTop = messagesArea.scrollHeight;
         }
     } catch (e) { console.error(e); }
@@ -465,6 +484,7 @@ searchBtn.onclick = function() {
     $('searchResults').innerHTML = '';
 };
 $('closeSearchModalBtn').onclick = function() { searchModal.style.display = 'none'; };
+$('closeSearchModalBtn2').onclick = function() { searchModal.style.display = 'none'; };
 async function locate(mId) {
     var tm = document.querySelector('.message[data-id="' + mId + '"]');
     if (tm) {
@@ -530,26 +550,77 @@ function appendPM(msg, sent) {
     privateMessagesArea.appendChild(d);
     privateMessagesArea.scrollTop = privateMessagesArea.scrollHeight;
 }
+
+// ========== 暴露全局关闭函数 ==========
+window.closePrivateChat = function() {
+    var win = document.getElementById('privateChatWindow');
+    if (win) win.style.display = 'none';
+    currentPrivateTarget = null;
+    var area = document.getElementById('privateMessagesArea');
+    if (area) area.innerHTML = '';
+    console.log('[私聊] 窗口已关闭');
+};
+
+// ========== 打开私聊 ==========
 async function openPChat(tid, tun) {
     currentPrivateTarget = { id: tid, username: tun };
-    privateChatWindow.style.display = 'flex';
-    $('privateChatHeader').innerHTML = '<span>💬 与 ' + window.escapeHtml(tun) + ' 私聊</span><button id="closePChatBtn" style="background:none;border:none;color:white;cursor:pointer;">✕</button>';
-    $('closePChatBtn').onclick = function() { privateChatWindow.style.display = 'none'; currentPrivateTarget = null; };
-    privateMessagesArea.innerHTML = '';
-    var r = await fetch('/api/private/messages/' + tid, { credentials: 'include' });
-    var d = await r.json();
-    if (d.success) {
-        for (var i = 0; i < d.messages.length; i++) {
-            var m = d.messages[i];
-            var s = m.from_user === currentUser.userId;
-            appendPM({ ...m, username: s ? null : tun }, s);
-        }
+    
+    // 显示私聊窗口
+    if (privateChatWindow) {
+        privateChatWindow.style.display = 'flex';
     }
+    
+    // 更新标题
+    var titleSpan = document.querySelector('#privateChatHeader span');
+    if (titleSpan) {
+        titleSpan.textContent = '💬 与 ' + window.escapeHtml(tun) + ' 私聊';
+    }
+    
+    // ========== 修复私聊关闭按钮 ==========
+    var closeBtn = document.getElementById('closePChatBtn');
+    if (!closeBtn) {
+        var header = document.getElementById('privateChatHeader');
+        if (header) {
+            var btn = document.createElement('button');
+            btn.className = 'close-btn';
+            btn.id = 'closePChatBtn';
+            btn.textContent = '✕';
+            btn.style.cssText = 'background:none;border:none;color:#fff;font-size:20px;cursor:pointer;opacity:0.7;padding:0 4px;';
+            btn.onmouseover = function() { this.style.opacity = '1'; };
+            btn.onmouseout = function() { this.style.opacity = '0.7'; };
+            btn.onclick = window.closePrivateChat;
+            header.appendChild(btn);
+            closeBtn = btn;
+        }
+    } else {
+        closeBtn.onclick = window.closePrivateChat;
+    }
+    
+    // 清空消息区域
+    if (privateMessagesArea) {
+        privateMessagesArea.innerHTML = '';
+    }
+    
+    // 加载私聊记录
+    try {
+        var r = await fetch('/api/private/messages/' + tid, { credentials: 'include' });
+        var d = await r.json();
+        if (d.success) {
+            for (var i = 0; i < d.messages.length; i++) {
+                var m = d.messages[i];
+                var s = m.from_user === currentUser.userId;
+                appendPM({ ...m, username: s ? null : tun }, s);
+            }
+        }
+    } catch (e) { console.error('加载私聊记录失败:', e); }
+    
     socket.emit('join private room', tid);
     socket.emit('mark private read', tid);
     unreadCounts[tid] = 0;
     updBadge(tid, 0);
 }
+
+// ========== renderOnline 使用正确的闭包 ==========
 function renderOnline(us) {
     onlineList.innerHTML = '';
     onlineCount.innerText = us.length;
@@ -569,16 +640,22 @@ function renderOnline(us) {
             b.innerText = uc > 99 ? '99+' : uc;
             d.appendChild(b);
         }
-        d.onclick = function() { openPChat(u.userId, u.username); };
+        (function(user) {
+            d.onclick = function() {
+                openPChat(user.userId, user.username);
+            };
+        })(u);
         onlineList.appendChild(d);
     }
 }
+
 privateChatListBtn.onclick = function() {
     var m = document.createElement('div');
     m.className = 'modal';
     m.style.display = 'flex';
     m.innerHTML = '<div class="modal-content"><h3>私聊列表</h3><div id="pcl" style="max-height:300px;overflow-y:auto;"></div><button id="cpclb" style="margin-top:12px;width:100%;padding:8px;border-radius:20px;border:none;cursor:pointer;">关闭</button></div>';
     document.body.appendChild(m);
+    m.querySelector('#cpclb').onclick = function() { m.remove(); };
     fetch('/api/private/list', { credentials: 'include' }).then(function(r) { return r.json(); }).then(function(d) {
         if (!d.success) return;
         var c = m.querySelector('#pcl');
@@ -591,11 +668,15 @@ privateChatListBtn.onclick = function() {
             dv.style.cssText = 'cursor:pointer;justify-content:space-between';
             var av = ch.avatarUrl || D;
             dv.innerHTML = '<div class="online-user-info"><img src="' + window.escapeHtml(av) + '"><span>' + window.escapeHtml(ch.username) + '</span></div>' + (ch.unread > 0 ? '<span class="unread-badge">' + ch.unread + '</span>' : '');
-            dv.onclick = function() { openPChat(ch.userId, ch.username); m.remove(); };
+            (function(chatUser) {
+                dv.onclick = function() { 
+                    openPChat(chatUser.userId, chatUser.username); 
+                    m.remove(); 
+                };
+            })(ch);
             c.appendChild(dv);
         }
     });
-    m.querySelector('#cpclb').onclick = function() { m.remove(); };
 };
 sendPrivateBtn.onclick = function() {
     if (!currentPrivateTarget || !privateInput.value.trim()) return;
@@ -608,7 +689,6 @@ privateInput.onkeypress = function(e) { if (e.key === 'Enter') sendPrivateBtn.cl
 
 // ========== 群聊核心功能 ==========
 
-// 切换群（修复：滚动到底部）
 function switchGroup(gid, name) {
     if (gid === currentGroupId) return;
     if (currentGroupId === 0) socket.emit('leave chat');
@@ -624,7 +704,6 @@ function switchGroup(gid, name) {
     groupMembersBtn.style.display = gid === 0 ? 'none' : 'inline-block';
     messagesArea.innerHTML = '<div id="loadingMore">⏳ 加载更早消息...</div>';
     loadHistory();
-    // 延迟滚动到底部，确保DOM渲染完成
     setTimeout(function() {
         messagesArea.scrollTop = messagesArea.scrollHeight;
     }, 200);
@@ -762,13 +841,6 @@ document.getElementById('groupSettingsForm')?.addEventListener('submit', functio
     });
 });
 
-document.getElementById('closeGroupSettingsBtn')?.addEventListener('click', function() { 
-    document.getElementById('groupSettingsModal').style.display = 'none'; 
-});
-document.getElementById('closeGroupSettingsBtn2')?.addEventListener('click', function() { 
-    document.getElementById('groupSettingsModal').style.display = 'none'; 
-});
-
 var settingsBtn = document.createElement('button');
 settingsBtn.id = 'groupSettingsBtn';
 settingsBtn.innerHTML = '⚙️';
@@ -808,13 +880,6 @@ document.getElementById('submitApplyBtn')?.addEventListener('click', function() 
             alert('申请失败：' + d.message);
         }
     });
-});
-
-document.getElementById('closeApplyModalBtn')?.addEventListener('click', function() { 
-    document.getElementById('applyJoinModal').style.display = 'none'; 
-});
-document.getElementById('cancelApplyBtn')?.addEventListener('click', function() { 
-    document.getElementById('applyJoinModal').style.display = 'none'; 
 });
 
 // ========== 加入申请管理 ==========
@@ -886,13 +951,6 @@ function viewJoinRequests() {
         });
 }
 
-document.getElementById('closeRequestModalBtn')?.addEventListener('click', function() { 
-    document.getElementById('joinRequestModal').style.display = 'none'; 
-});
-document.getElementById('closeRequestModalBtn2')?.addEventListener('click', function() { 
-    document.getElementById('joinRequestModal').style.display = 'none'; 
-});
-
 var requestBtn = document.createElement('button');
 requestBtn.id = 'requestManageBtn';
 requestBtn.innerHTML = '📋';
@@ -941,13 +999,6 @@ document.getElementById('submitInviteBtn')?.addEventListener('click', function()
     });
 });
 
-document.getElementById('closeInviteModalBtn')?.addEventListener('click', function() { 
-    document.getElementById('inviteUserModal').style.display = 'none'; 
-});
-document.getElementById('cancelInviteBtn')?.addEventListener('click', function() { 
-    document.getElementById('inviteUserModal').style.display = 'none'; 
-});
-
 var inviteBtn = document.createElement('button');
 inviteBtn.id = 'inviteBtn';
 inviteBtn.innerHTML = '📤';
@@ -964,6 +1015,7 @@ createGroupBtn.onclick = function() {
     document.getElementById('newGroupName').focus();
 };
 document.getElementById('closeCreateGroupBtn').onclick = function() { createGroupModal.style.display = 'none'; };
+document.getElementById('closeCreateGroupBtn2').onclick = function() { createGroupModal.style.display = 'none'; };
 document.getElementById('doCreateGroupBtn').onclick = function() {
     var n = document.getElementById('newGroupName').value.trim(), d = document.getElementById('newGroupDesc').value.trim();
     if (!n || n.length < 1 || n.length > 20) { alert('群名称1-20字'); return; }
@@ -1027,6 +1079,7 @@ discoverGroupsBtn.onclick = function() {
         });
 };
 document.getElementById('closeDiscoverGroupsBtn').onclick = function() { discoverGroupsModal.style.display = 'none'; };
+document.getElementById('closeDiscoverGroupsBtn2').onclick = function() { discoverGroupsModal.style.display = 'none'; };
 
 // ========== 群成员管理 ==========
 groupMembersBtn.onclick = function() {
@@ -1092,6 +1145,7 @@ groupMembersBtn.onclick = function() {
         });
 };
 document.getElementById('closeGroupMembersBtn').onclick = function() { groupMembersModal.style.display = 'none'; };
+document.getElementById('closeGroupMembersBtn2').onclick = function() { groupMembersModal.style.display = 'none'; };
 
 // ========== 全局操作函数 ==========
 window.togAdmin = function(gid, uid, role) {
@@ -1205,7 +1259,6 @@ async function init() {
             historyLoaded = true;
             hasMoreHistory = msgs.length === 50;
             sendReads();
-            // 滚动到底部
             messagesArea.scrollTop = messagesArea.scrollHeight;
         }
     });
@@ -1296,9 +1349,7 @@ async function init() {
     });
     
     socket.on('group_created', function(data) {
-        // 刷新群列表
         loadGroups();
-        // 如果当前在群聊页面，自动切换到新群
         if (data.groupId && data.name) {
             switchGroup(data.groupId, '👥 ' + data.name);
         }
