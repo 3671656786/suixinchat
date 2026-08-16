@@ -9,13 +9,13 @@ const { logToFile } = require('../utils/logger');
 const { DEFAULT_AVATAR_URL } = require('../config');
 const { isLoggedIn, checkRegisterLimit } = require('../middleware/auth');
 
-// 获取当前协议版本
+// ========== 获取当前协议版本 ==========
 function getCurrentAgreementVersion() {
     const version = db.prepare('SELECT version FROM agreement_version WHERE id = 1').get();
     return version ? version.version : 1;
 }
 
-// #20 修复：验证码频率限制改用数据库存储（替代内存 Map）
+// ========== 验证码频率限制（数据库存储） ==========
 function getCooldown(key) {
     const row = db.prepare('SELECT count, first_time, last_time FROM verification_cooldowns WHERE key = ?').get(key);
     return row;
@@ -39,7 +39,6 @@ function checkRateLimit(key, maxAttempts, windowMs) {
         updateCooldown(key, 1, now);
         return true;
     }
-    // 重置窗口
     if (now - record.first_time > windowMs) {
         updateCooldown(key, 1, now);
         return true;
@@ -51,14 +50,31 @@ function checkRateLimit(key, maxAttempts, windowMs) {
     return true;
 }
 
-// 发送注册验证码（带频率限制）
+// ========== 辅助函数：清理过期封禁 ==========
+function cleanExpiredBans(userId) {
+    try {
+        const now = new Date().toISOString();
+        const result = db.prepare(`
+            DELETE FROM user_bans 
+            WHERE user_id = ? AND expires_at IS NOT NULL AND expires_at <= ?
+        `).run(userId, now);
+        if (result.changes > 0) {
+            logToFile(`[封禁清理] 用户 ${userId} 的 ${result.changes} 条过期封禁记录已自动删除`);
+        }
+        return result.changes;
+    } catch (err) {
+        console.error('[封禁清理] 清理过期封禁失败:', err);
+        return 0;
+    }
+}
+
+// ========== 发送注册验证码 ==========
 router.post('/api/send-verification-code', async (req, res) => {
     const { email } = req.body;
     if (!email) return res.status(400).json({ success: false, message: '邮箱不能为空' });
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     if (!emailRegex.test(email)) return res.status(400).json({ success: false, message: '邮箱格式不正确' });
     
-    // #20 修复：使用数据库限流
     const emailKey = `email:${email}`;
     if (!checkRateLimit(emailKey, 1, 60000)) {
         return res.status(429).json({ success: false, message: '验证码发送过于频繁，请 60 秒后再试' });
@@ -88,7 +104,7 @@ router.post('/api/send-verification-code', async (req, res) => {
     }
 });
 
-// 注册
+// ========== 注册 ==========
 router.post('/api/register', checkRegisterLimit, async (req, res) => {
     const { username, password, email, verificationCode, avatarUrl } = req.body;
     if (!username || !password || !email || !verificationCode) {
@@ -98,11 +114,17 @@ router.post('/api/register', checkRegisterLimit, async (req, res) => {
     if (cleanUsername.length < 2 || cleanUsername.length > 20) {
         return res.json({ success: false, message: '用户名长度应为2-20个字符' });
     }
+    // 修复 #2：注册时检查密码长度（至少6位）
+    if (typeof password !== 'string' || password.length < 6) {
+        return res.json({ success: false, message: '密码长度至少6位' });
+    }
+    if (password.length > 72) {
+        return res.json({ success: false, message: '密码长度不能超过72个字符' });
+    }
     
     const blacklisted = db.prepare('SELECT * FROM email_blacklist WHERE email = ?').get(email);
     if (blacklisted) return res.json({ success: false, message: '该邮箱已被禁止注册' });
     
-    // #20 修复：验证码验证频率限制使用数据库
     const verifyKey = `verify:${email}`;
     if (!checkRateLimit(verifyKey, 3, 10000)) {
         return res.json({ success: false, message: '验证码验证过于频繁，请10秒后再试' });
@@ -111,6 +133,9 @@ router.post('/api/register', checkRegisterLimit, async (req, res) => {
     const now = new Date().toISOString();
     const record = db.prepare('SELECT * FROM email_verifications WHERE email = ? AND code = ? AND expires_at > ?').get(email, verificationCode, now);
     if (!record) return res.json({ success: false, message: '验证码无效或已过期' });
+    
+    // 修复 #3：验证码验证通过后立即删除，防止重复使用
+    db.prepare('DELETE FROM email_verifications WHERE email = ?').run(email);
     
     const existingUser = db.prepare('SELECT * FROM users WHERE username = ?').get(cleanUsername);
     if (existingUser) return res.json({ success: false, message: '用户名已存在' });
@@ -129,15 +154,15 @@ router.post('/api/register', checkRegisterLimit, async (req, res) => {
     const ip = getClientIp(req);
     db.prepare('INSERT INTO reg_attempts (ip) VALUES (?)').run(ip);
     req.session.userId = userId;
-    db.prepare('DELETE FROM email_verifications WHERE email = ?').run(email);
     logToFile(`新用户注册: ${cleanUsername} (${userId})`);
     res.json({ success: true, user: { userId, username: cleanUsername, avatarUrl: avatar, role: 'user' } });
 });
 
-// 登录
+// ========== 登录（修复：清理过期封禁） ==========
 router.post('/api/login', async (req, res) => {
     const { account, password } = req.body;
     if (!account || !password) return res.json({ success: false, message: '账号和密码不能为空' });
+    
     let user;
     if (account.includes('@')) {
         user = db.prepare('SELECT * FROM users WHERE email = ?').get(account);
@@ -147,7 +172,8 @@ router.post('/api/login', async (req, res) => {
     if (!user) return res.json({ success: false, message: '账号或密码错误' });
     
     let isValid = false;
-    if (user.password.startsWith('$2b$')) {
+    // 修复：兼容 $2a$/$2b$/$2y$ 等所有 bcrypt 前缀（旧数据或不同库生成的哈希）
+    if (user.password && /^\$2[aby]\$/.test(user.password)) {
         isValid = await bcrypt.compare(password, user.password);
     } else {
         isValid = (password === user.password);
@@ -159,21 +185,44 @@ router.post('/api/login', async (req, res) => {
     }
     if (!isValid) return res.json({ success: false, message: '账号或密码错误' });
 
+    // ========== 修复：先清理已过期的封禁记录 ==========
+    cleanExpiredBans(user.userId);
+
     // 检查登录封禁
     const now = new Date().toISOString();
-    const ban = db.prepare(`SELECT * FROM user_bans WHERE user_id = ? AND ban_type IN ('login', 'all') AND (expires_at IS NULL OR expires_at > ?)`).get(user.userId, now);
-    if (ban) return res.json({ success: false, message: '您的账号已被封禁，无法登录', banned: true });
+    const ban = db.prepare(`
+        SELECT * FROM user_bans 
+        WHERE user_id = ? AND ban_type IN ('login', 'all') 
+        AND (expires_at IS NULL OR expires_at > ?)
+    `).get(user.userId, now);
+    
+    if (ban) {
+        let message = '您的账号已被封禁，无法登录';
+        if (ban.reason) message += `，原因：${ban.reason}`;
+        if (ban.expires_at) {
+            const expireDate = new Date(ban.expires_at);
+            message += `，将于 ${expireDate.toLocaleString()} 自动解封`;
+        } else {
+            message += `，此封禁为永久`;
+        }
+        // 修复 #62：封禁响应使用 403 状态码
+        return res.status(403).json({ success: false, message, banned: true });
+    }
 
     req.session.userId = user.userId;
     logToFile(`用户登录: ${user.username} (${user.userId})`);
+    // 修复 #1：根据用户已同意的协议版本与当前版本比较，动态决定是否强制弹出协议
+    const agreedVersion = user.agreed_agreement_version || 0;
+    const currentVersion = getCurrentAgreementVersion();
+    const needAgree = agreedVersion < currentVersion;
     res.json({ 
         success: true, 
         user: { userId: user.userId, username: user.username, avatarUrl: user.avatarUrl, role: user.role },
-        needAgree: true
+        needAgree
     });
 });
 
-// 同意协议
+// ========== 同意协议 ==========
 router.post('/api/agree-agreement', isLoggedIn, (req, res) => {
     const userId = req.userId;
     const currentVersion = getCurrentAgreementVersion();
@@ -181,14 +230,13 @@ router.post('/api/agree-agreement', isLoggedIn, (req, res) => {
     res.json({ success: true });
 });
 
-// 找回密码 - 发送验证码
+// ========== 找回密码 - 发送验证码 ==========
 router.post('/api/forgot-password/send-code', async (req, res) => {
     const { email } = req.body;
     if (!email) return res.status(400).json({ success: false, message: '邮箱不能为空' });
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     if (!emailRegex.test(email)) return res.status(400).json({ success: false, message: '邮箱格式不正确' });
     
-    // #20 修复：频率限制
     const resetKey = `reset:${email}`;
     if (!checkRateLimit(resetKey, 1, 60000)) {
         return res.status(429).json({ success: false, message: '验证码发送过于频繁，请60秒后再试' });
@@ -209,13 +257,12 @@ router.post('/api/forgot-password/send-code', async (req, res) => {
     }
 });
 
-// 重置密码
+// ========== 重置密码 ==========
 router.post('/api/reset-password', async (req, res) => {
     const { email, verificationCode, newPassword } = req.body;
     if (!email || !verificationCode || !newPassword) return res.status(400).json({ success: false, message: '请完整填写信息' });
     if (newPassword.length < 6) return res.status(400).json({ success: false, message: '密码长度至少6位' });
     
-    // #20 修复：验证码验证频率限制
     const verifyKey = `reset_verify:${email}`;
     if (!checkRateLimit(verifyKey, 3, 10000)) {
         return res.status(429).json({ success: false, message: '验证过于频繁，请10秒后再试' });
@@ -230,7 +277,7 @@ router.post('/api/reset-password', async (req, res) => {
     res.json({ success: true, message: '密码已重置，请使用新密码登录' });
 });
 
-// 更换邮箱验证码
+// ========== 更换邮箱验证码 ==========
 router.post('/api/send-change-email-code', isLoggedIn, async (req, res) => {
     const userId = req.userId;
     const { newEmail } = req.body;
@@ -238,7 +285,6 @@ router.post('/api/send-change-email-code', isLoggedIn, async (req, res) => {
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     if (!emailRegex.test(newEmail)) return res.status(400).json({ success: false, message: '邮箱格式不正确' });
     
-    // #20 修复：频率限制
     const changeKey = `change_email:${userId}`;
     if (!checkRateLimit(changeKey, 1, 60000)) {
         return res.status(429).json({ success: false, message: '验证码发送过于频繁，请60秒后再试' });
@@ -263,7 +309,7 @@ router.post('/api/send-change-email-code', isLoggedIn, async (req, res) => {
     }
 });
 
-// 确认更换邮箱
+// ========== 确认更换邮箱 ==========
 router.post('/api/change-email', isLoggedIn, async (req, res) => {
     const userId = req.userId;
     const { newEmail, verificationCode } = req.body;
@@ -271,7 +317,6 @@ router.post('/api/change-email', isLoggedIn, async (req, res) => {
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     if (!emailRegex.test(newEmail)) return res.status(400).json({ success: false, message: '邮箱格式不正确' });
     
-    // #20 修复：验证码验证频率限制
     const verifyKey = `change_verify:${userId}`;
     if (!checkRateLimit(verifyKey, 3, 10000)) {
         return res.status(429).json({ success: false, message: '验证过于频繁，请10秒后再试' });

@@ -262,7 +262,7 @@ function appendMessage(msg, prepend) {
     if (msg.replyTo || (msg.replyToUsername && msg.replyToContent)) {
         var rd = document.createElement('div');
         rd.style.cssText = 'font-size:12px;color:#999;margin-bottom:4px;padding:4px 8px;background:#f0f0f0;border-radius:8px;';
-        rd.innerHTML = '<span style="color:var(--primary);">' + window.escapeHtml(msg.replyTo ? msg.replyTo.username : msg.replyToUsername) + '</span>: ' + window.escapeHtml((msg.replyTo ? msg.replyTo.content : msg.replyToContent || '').substring(0, 50));
+        rd.innerHTML = '<span style="color:var(--primary);">' + window.escapeHtml(msg.replyTo ? msg.replyTo.username : msg.replyToUsername) + '</span>: ' + window.escapeHtml(window.truncateText(msg.replyTo ? msg.replyTo.content : msg.replyToContent || '', 50));
         b.appendChild(rd);
     }
     if (msg.content) {
@@ -335,7 +335,7 @@ function appendMessage(msg, prepend) {
     b.onclick = function() {
         if (msg.content) {
             replyToMsg = { id: msg.id, username: msg.username, content: msg.content };
-            replyContent.innerText = '回复 ' + msg.username + ': ' + msg.content.substring(0, 50);
+            replyContent.innerText = '回复 ' + msg.username + ': ' + window.truncateText(msg.content, 50);
             replyBar.classList.remove('hidden');
         }
     };

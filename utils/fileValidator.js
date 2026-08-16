@@ -52,7 +52,8 @@ function readFileHexSignature(filePath, bytes = 8) {
 }
 
 function validateFileType(filePath, declaredMime) {
-    const hex = readFileHexSignature(filePath, 12);
+    // 修复 #22：读取16字节，保证 WebP 的 "WEBP" 标记（位于第8-11字节）在范围内
+    const hex = readFileHexSignature(filePath, 16);
     if (!hex) return { valid: false, detectedType: null, reason: '无法读取文件' };
 
     // #23 修复：检测 UTF-16 文本文件
@@ -91,7 +92,8 @@ function validateFileType(filePath, declaredMime) {
     }
 
     if (declaredMime === 'image/webp') {
-        if (hex.startsWith('52494646') && hex.substring(8, 16) === '57454250') {
+        // RIFF(0-3) + size(4-7) + WEBP(8-11)：检查偏移 8 处的 'WEBP' 标记
+        if (hex.startsWith('52494646') && hex.substring(16, 24) === '57454250') {
             return { valid: true, detectedType: declaredMime };
         }
         return { valid: false, detectedType: null, reason: '文件头不匹配WebP格式' };

@@ -9,6 +9,7 @@ const { validateFileType } = require('../utils/fileValidator');
 const { logToFile } = require('../utils/logger');
 const { storage, fileFilter } = require('../config/multer');
 const { FILE_SIZE_LIMITS } = require('../config');
+const { checkFilesDownloadBan } = require('../middleware/banCheck');
 const { safePath } = require('../utils/safePath');
 
 const fs = require('fs');
@@ -43,7 +44,8 @@ router.post('/api/private/upload', isLoggedIn, checkChatBan, (req, res, next) =>
 });
 
 // ========== 私聊文件下载（已使用safePath） ==========
-router.get('/api/private/download/:id', isLoggedIn, async (req, res) => {
+// 修复 #10：添加封禁检查，被封禁用户无法下载私聊文件
+router.get('/api/private/download/:id', isLoggedIn, checkFilesDownloadBan, async (req, res) => {
     const msgId = req.params.id;
     const userId = req.userId;
     const msg = db.prepare('SELECT fileUrl, fileName, fileSize, from_user, to_user FROM private_messages WHERE id = ? AND (from_user = ? OR to_user = ?)').get(msgId, userId, userId);
@@ -87,6 +89,7 @@ router.get('/api/private/messages/:userId', isLoggedIn, (req, res) => {
     }
     
     try {
+        // 修复 #69：私聊记录添加 LIMIT 限制，避免大量消息时性能问题
         const messages = db.prepare(`
             SELECT pm.*, 
                    u1.username as from_username,
@@ -96,6 +99,7 @@ router.get('/api/private/messages/:userId', isLoggedIn, (req, res) => {
             LEFT JOIN users u2 ON pm.to_user = u2.userId
             WHERE (pm.from_user = ? AND pm.to_user = ?) OR (pm.from_user = ? AND pm.to_user = ?)
             ORDER BY pm.timestamp ASC
+            LIMIT 200
         `).all(currentUserId, targetUserId, targetUserId, currentUserId);
         res.json({ success: true, messages });
     } catch (err) {
@@ -108,6 +112,7 @@ router.get('/api/private/messages/:userId', isLoggedIn, (req, res) => {
 router.get('/api/private/list', isLoggedIn, (req, res) => {
     const currentUserId = req.userId;
     try {
+        // 修复 #68：子查询不再引用外层别名，使用明确的 CASE 表达式
         const chats = db.prepare(`
             SELECT DISTINCT 
                 CASE 
@@ -116,12 +121,15 @@ router.get('/api/private/list', isLoggedIn, (req, res) => {
                 END as userId,
                 u.username,
                 u.avatarUrl,
-                (SELECT COUNT(*) FROM private_messages WHERE to_user = ? AND from_user = userId AND is_read = 0) as unread
+                (SELECT COUNT(*) FROM private_messages p2 
+                 WHERE p2.to_user = ? 
+                   AND p2.from_user = (CASE WHEN pm.from_user = ? THEN pm.to_user ELSE pm.from_user END) 
+                   AND p2.is_read = 0) as unread
             FROM private_messages pm
             JOIN users u ON u.userId = (CASE WHEN pm.from_user = ? THEN pm.to_user ELSE pm.from_user END)
             WHERE (pm.from_user = ? OR pm.to_user = ?) AND u.userId IS NOT NULL
             ORDER BY pm.timestamp DESC
-        `).all(currentUserId, currentUserId, currentUserId, currentUserId, currentUserId);
+        `).all(currentUserId, currentUserId, currentUserId, currentUserId, currentUserId, currentUserId);
         res.json({ success: true, chats });
     } catch (err) {
         console.error('获取私聊列表失败:', err);

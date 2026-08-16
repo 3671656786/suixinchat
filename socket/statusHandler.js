@@ -1,5 +1,6 @@
 // socket/statusHandler.js
 const db = require('../db/connection');
+const { escapeHtml } = require('../utils/helpers');
 
 // 保存用户在线时长
 function saveUserDuration(userId, currentTime, onlineUsers) {
@@ -62,7 +63,8 @@ module.exports = (socket, io, onlineUsers, db, addOnlineUser, removeOnlineUser, 
             saveUserDuration(userId, now, onlineUsers);
             broadcastOnlineUsers();
             if (socket.rooms.has('chatroom')) {
-                socket.broadcast.to('chatroom').emit('system message', `${user.username} 离开了聊天室`);
+                // 修复：用户名转义，防止 XSS
+                socket.broadcast.to('chatroom').emit('system message', `${escapeHtml(user.username)} 离开了聊天室`);
             }
         }
         socket.disconnect(true);
@@ -111,7 +113,7 @@ module.exports = (socket, io, onlineUsers, db, addOnlineUser, removeOnlineUser, 
                     if (sock) {
                         cleanupUserRooms(sock);
                         if (sock.rooms.has('chatroom')) {
-                            sock.broadcast.to('chatroom').emit('system message', `${user.username} 离开了聊天室`);
+                            sock.broadcast.to('chatroom').emit('system message', `${escapeHtml(user.username)} 离开了聊天室`);
                         }
                     }
                 }

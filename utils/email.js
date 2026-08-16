@@ -2,6 +2,11 @@
 const nodemailer = require('nodemailer');
 require('dotenv').config();
 
+// 修复 #92：EMAIL_USER 未配置时给出明确警告，避免邮件功能静默失败
+if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS) {
+    console.warn('⚠️ 邮件服务未配置（缺少 EMAIL_USER / EMAIL_PASS），邮件相关功能（验证码、公告、报表）将无法使用');
+}
+
 const transporter = nodemailer.createTransport({
     host: process.env.EMAIL_HOST || 'smtp.qq.com',
     port: parseInt(process.env.EMAIL_PORT) || 465,

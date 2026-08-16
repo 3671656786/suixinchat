@@ -31,12 +31,17 @@ router.post('/api/updateProfile', isLoggedIn, async (req, res) => {
     const { username, receiveEmailAnnouncements } = req.body;
     try {
         if (username) {
-            const existing = db.prepare('SELECT * FROM users WHERE username = ? AND userId != ?').get(username, userId);
+            // 修复：用户名修改同样校验长度（与注册规则一致：2-20 字符）
+            const cleanName = String(username).trim();
+            if (cleanName.length < 2 || cleanName.length > 20) {
+                return res.json({ success: false, message: '用户名长度应为2-20个字符' });
+            }
+            const existing = db.prepare('SELECT * FROM users WHERE username = ? AND userId != ?').get(cleanName, userId);
             if (existing) return res.json({ success: false, message: '用户名已存在' });
-            db.prepare('UPDATE users SET username = ? WHERE userId = ?').run(username, userId);
-            db.prepare('UPDATE messages SET username = ? WHERE userId = ?').run(username, userId);
+            db.prepare('UPDATE users SET username = ? WHERE userId = ?').run(cleanName, userId);
+            db.prepare('UPDATE messages SET username = ? WHERE userId = ?').run(cleanName, userId);
             const onlineInfo = onlineUsers.get(userId);
-            if (onlineInfo) onlineInfo.username = username;
+            if (onlineInfo) onlineInfo.username = cleanName;
         }
         if (receiveEmailAnnouncements !== undefined) {
             const val = receiveEmailAnnouncements ? 1 : 0;
@@ -85,6 +90,9 @@ router.post('/api/changePassword', isLoggedIn, async (req, res) => {
     const userId = req.userId;
     const { oldPassword, newPassword } = req.body;
     if (!oldPassword || !newPassword) return res.json({ success: false, message: '旧密码和新密码不能为空' });
+    // 修复：新密码长度校验（与注册规则一致：至少 6 位，且不超过 bcrypt 上限 72 字节）
+    if (newPassword.length < 6) return res.json({ success: false, message: '新密码长度至少6位' });
+    if (newPassword.length > 72) return res.json({ success: false, message: '新密码长度不能超过72个字符' });
     try {
         const user = db.prepare('SELECT password FROM users WHERE userId = ?').get(userId);
         if (!user) return res.json({ success: false, message: '用户不存在' });

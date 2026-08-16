@@ -8,6 +8,13 @@ function escapeHtml(text) {
     return text.replace(/[&<>"']/g, function(m) { return e[m]; });
 }
 
+// 修复 #73：按 Unicode 码点安全截断，避免截断中文字符产生乱码
+function truncateText(text, maxLength) {
+    text = (text === null || text === undefined) ? '' : String(text);
+    if (text.length <= maxLength) return text;
+    return Array.from(text).slice(0, maxLength).join('') + '...';
+}
+
 async function apiRequest(url, method, body) {
     const res = await fetch(url, {
         method,
@@ -102,7 +109,7 @@ async function loadModifyFiles() {
             html += `<div class="status-item">
                 <span>${escapeHtml(item.filename)}</span>
                 <span><span class="${badgeClass}">${statusText}</span></span>
-                <span style="font-size:12px;color:#666;">${escapeHtml(item.sql.substring(0, 50))}</span>
+                <span style="font-size:12px;color:#666;">${escapeHtml(truncateText(item.sql, 50))}</span>
             </div>`;
         });
         container.innerHTML = html;

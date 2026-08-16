@@ -1,14 +1,16 @@
 // socket/chatHandler.js
 const path = require('path');
 const fs = require('fs').promises;
-const { replaceEmojis } = require('../utils/helpers');
+const { replaceEmojis, truncateText, escapeHtml } = require('../utils/helpers');
 const { RECALLED_DIR } = require('../config');
 const db = require('../db/connection');
 const { safePath } = require('../utils/safePath');
 
 const UPLOAD_BASE = path.join(__dirname, '../uploads');
-const MAX_MESSAGE_LENGTH = 2000;
-const MESSAGE_RATE_LIMIT_MS = 300;
+// 修复 #7：从配置读取消息长度与频率限制（支持环境变量覆盖），不再硬编码
+const { MAX_MESSAGE_LENGTH: CFG_MAX_LENGTH, MESSAGE_RATE_LIMIT_MS: CFG_RATE_LIMIT } = require('../config');
+const MAX_MESSAGE_LENGTH = CFG_MAX_LENGTH || 2000;
+const MESSAGE_RATE_LIMIT_MS = CFG_RATE_LIMIT || 300;
 const userLastMessageTime = new Map();
 
 function updateGlobalUsedBytesAtomically(delta) {
@@ -42,9 +44,11 @@ module.exports = (socket, io, onlineUsers, db, logToFile) => {
 
     socket.on('join chat', () => {
         socket.join('chatroom');
-        const recentMessages = db.prepare('SELECT * FROM messages WHERE groupId = 0 ORDER BY timestamp ASC LIMIT 50').all();
+        // 修复 #6：按 id 倒序取最新 50 条，再反转成正序返回
+        const recentMessages = db.prepare('SELECT * FROM messages WHERE groupId = 0 ORDER BY id DESC LIMIT 50').all().reverse();
         socket.emit('history messages', recentMessages);
-        socket.broadcast.to('chatroom').emit('system message', `${user.username} 进入了聊天室`);
+        // 修复：用户名转义，防止存储型 XSS（用户可在用户名中注入 HTML）
+        socket.broadcast.to('chatroom').emit('system message', `${escapeHtml(user.username)} 进入了聊天室`);
     });
 
     socket.on('chat message', async (rawContent, replyToId = null) => {
@@ -69,7 +73,7 @@ module.exports = (socket, io, onlineUsers, db, logToFile) => {
             const repliedMsg = db.prepare('SELECT username, content FROM messages WHERE id = ?').get(replyToId);
             if (repliedMsg) {
                 replyToUsername = repliedMsg.username;
-                replyToContent = repliedMsg.content ? repliedMsg.content.substring(0, 100) : '[文件]';
+                replyToContent = repliedMsg.content ? truncateText(repliedMsg.content, 100) : '[文件]';
             }
         }
         const result = db.prepare(
@@ -105,6 +109,19 @@ module.exports = (socket, io, onlineUsers, db, logToFile) => {
         const timestamp = new Date().toISOString();
         const result = db.prepare(`INSERT INTO messages (userId, username, avatarUrl, fileUrl, fileName, fileType, timestamp, groupId) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
             .run(user.userId, user.username, user.avatarUrl, fileUrl, fileName, fileType, timestamp, 0);
+        // 修复 #19：普通用户聊天室上传计入全局容量（撤回时按用户角色扣减，保持一致）
+        const uploader = db.prepare('SELECT role FROM users WHERE userId = ?').get(userId);
+        if (uploader && uploader.role !== 'admin' && fileUrl) {
+            try {
+                const fpath = safePath(UPLOAD_BASE, fileUrl);
+                if (fpath) {
+                    const stat = await fs.stat(fpath);
+                    if (stat.size > 0) {
+                        updateGlobalUsedBytesAtomically(stat.size);
+                    }
+                }
+            } catch (e) { /* 文件大小获取失败不影响消息发送 */ }
+        }
         const newMsg = {
             id: result.lastInsertRowid,
             userId: user.userId,
@@ -136,17 +153,24 @@ module.exports = (socket, io, onlineUsers, db, logToFile) => {
         if (msg.fileUrl) {
             try {
                 const originalSafePath = safePath(UPLOAD_BASE, msg.fileUrl);
-                await fs.access(originalSafePath);
-                const originalFileName = msg.fileName || path.basename(msg.fileUrl);
-                const now = new Date();
-                const recallTime = `${now.getFullYear()}${String(now.getMonth()+1).padStart(2,'0')}${String(now.getDate()).padStart(2,'0')}_${String(now.getHours()).padStart(2,'0')}${String(now.getMinutes()).padStart(2,'0')}${String(now.getSeconds()).padStart(2,'0')}`;
-                const newFilePath = path.join(RECALLED_DIR, `${recallTime}_${userId}_${originalFileName}`);
-                await fs.rename(originalSafePath, newFilePath);
-                logToFile(`[撤回] ${user.username} 撤回消息 ${messageId}，文件移至 ${newFilePath}`);
+                // 修复 #14：safePath 可能返回 null（非法/空路径），此时跳过文件移动
+                if (!originalSafePath) {
+                    console.warn(`[撤回] 非法文件路径，跳过移动: ${msg.fileUrl}`);
+                } else {
+                    const stat = await fs.stat(originalSafePath);
+                    const fileSize = stat.size;
+                    const originalFileName = msg.fileName || path.basename(msg.fileUrl);
+                    const now = new Date();
+                    const recallTime = `${now.getFullYear()}${String(now.getMonth()+1).padStart(2,'0')}${String(now.getDate()).padStart(2,'0')}_${String(now.getHours()).padStart(2,'0')}${String(now.getMinutes()).padStart(2,'0')}${String(now.getSeconds()).padStart(2,'0')}`;
+                    const newFilePath = path.join(RECALLED_DIR, `${recallTime}_${userId}_${originalFileName}`);
+                    await fs.rename(originalSafePath, newFilePath);
+                    logToFile(`[撤回] ${user.username} 撤回消息 ${messageId}，文件移至 ${newFilePath}`);
 
-                const uploader = db.prepare('SELECT role FROM users WHERE userId = ?').get(msg.userId);
-                if (uploader && uploader.role === 'user') {
-                    updateGlobalUsedBytesAtomically(-(msg.fileSize || 0));
+                    // 修复 #19：按实际文件大小扣减（与上传时计入保持一致）
+                    const uploader = db.prepare('SELECT role FROM users WHERE userId = ?').get(msg.userId);
+                    if (uploader && uploader.role === 'user' && fileSize > 0) {
+                        updateGlobalUsedBytesAtomically(-fileSize);
+                    }
                 }
             } catch (err) { console.error('移动文件失败:', err); }
         }
@@ -189,7 +213,7 @@ module.exports = (socket, io, onlineUsers, db, logToFile) => {
         let replyToUsername = null, replyToContent = null;
         if (replyToId) {
             const m = db.prepare('SELECT username, content FROM messages WHERE id = ? AND groupId = ?').get(replyToId, groupId);
-            if (m) { replyToUsername = m.username; replyToContent = m.content ? m.content.substring(0, 100) : '[文件]'; }
+            if (m) { replyToUsername = m.username; replyToContent = m.content ? truncateText(m.content, 100) : '[文件]'; }
         }
 
         const result = db.prepare(
@@ -216,6 +240,20 @@ module.exports = (socket, io, onlineUsers, db, logToFile) => {
              VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
         ).run(user.userId, user.username, user.avatarUrl, fileUrl, fileName, fileType, timestamp, groupId);
 
+        // 修复 #19：普通用户群聊上传计入全局容量（撤回时按用户角色扣减，保持一致）
+        const uploader = db.prepare('SELECT role FROM users WHERE userId = ?').get(userId);
+        if (uploader && uploader.role !== 'admin' && fileUrl) {
+            try {
+                const fpath = safePath(UPLOAD_BASE, fileUrl);
+                if (fpath) {
+                    const stat = await fs.stat(fpath);
+                    if (stat.size > 0) {
+                        updateGlobalUsedBytesAtomically(stat.size);
+                    }
+                }
+            } catch (e) { /* 文件大小获取失败不影响消息发送 */ }
+        }
+
         io.to(`group:${groupId}`).emit('new group message', {
             id: result.lastInsertRowid, userId: user.userId, username: user.username,
             avatarUrl: user.avatarUrl, content: '', fileUrl, fileName, fileType, timestamp, groupId
@@ -240,17 +278,22 @@ module.exports = (socket, io, onlineUsers, db, logToFile) => {
         if (msg.fileUrl) {
             try {
                 const originalSafePath = safePath(UPLOAD_BASE, msg.fileUrl);
-                await fs.access(originalSafePath);
-                const stat = await fs.stat(originalSafePath);
-                const fileSize = stat.size;
-                const now = new Date();
-                const rt = `${now.getFullYear()}${String(now.getMonth()+1).padStart(2,'0')}${String(now.getDate()).padStart(2,'0')}_${String(now.getHours()).padStart(2,'0')}${String(now.getMinutes()).padStart(2,'0')}${String(now.getSeconds()).padStart(2,'0')}`;
-                const fileName = msg.fileName || path.basename(msg.fileUrl);
-                await fs.rename(originalSafePath, path.join(RECALLED_DIR, `${rt}_${userId}_${fileName}`));
+                // 修复 #14：safePath 可能返回 null，跳过文件移动
+                if (!originalSafePath) {
+                    console.warn(`[撤回] 非法文件路径，跳过移动: ${msg.fileUrl}`);
+                } else {
+                    await fs.access(originalSafePath);
+                    const stat = await fs.stat(originalSafePath);
+                    const fileSize = stat.size;
+                    const now = new Date();
+                    const rt = `${now.getFullYear()}${String(now.getMonth()+1).padStart(2,'0')}${String(now.getDate()).padStart(2,'0')}_${String(now.getHours()).padStart(2,'0')}${String(now.getMinutes()).padStart(2,'0')}${String(now.getSeconds()).padStart(2,'0')}`;
+                    const fileName = msg.fileName || path.basename(msg.fileUrl);
+                    await fs.rename(originalSafePath, path.join(RECALLED_DIR, `${rt}_${userId}_${fileName}`));
 
-                const uploader = db.prepare('SELECT role FROM users WHERE userId = ?').get(msg.userId);
-                if (uploader && uploader.role === 'user' && fileSize > 0) {
-                    updateGlobalUsedBytesAtomically(-fileSize);
+                    const uploader = db.prepare('SELECT role FROM users WHERE userId = ?').get(msg.userId);
+                    if (uploader && uploader.role === 'user' && fileSize > 0) {
+                        updateGlobalUsedBytesAtomically(-fileSize);
+                    }
                 }
             } catch (err) { console.error('移动文件失败:', err); }
         }

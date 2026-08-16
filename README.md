@@ -2,7 +2,7 @@
 
 随心聊是一款 **功能完整的实时聊天网站**，集聊天室、个人网盘、云笔记、管理后台于一体，采用绿色清新风格设计，支持手机和电脑自适应访问。
 
-> **当前版本：v2.5.0** | 默认界面语言为中文 (简体)。如需修改为英文或其他语言，请参考下方的 [🌐 多语言支持](#-多语言支持) 章节。
+> **当前版本：v3.0.0** | 默认界面语言为中文 (简体)。如需修改为英文或其他语言，请参考下方的 [🌐 多语言支持](#-多语言支持) 章节。
 
 ---
 
@@ -156,7 +156,7 @@ PORT=3000
 SESSION_SECRET=your_random_secret_key_here
 NODE_ENV=production
 LOG_LEVEL=info
-USE_SQLITE_SESSION=false
+USE_SQLITE_SESSION=true
 
 # 邮件服务（QQ邮箱示例）
 EMAIL_HOST=smtp.qq.com
@@ -170,6 +170,7 @@ MAX_MESSAGE_LENGTH=2000
 MESSAGE_RATE_LIMIT_MS=300
 HEARTBEAT_INTERVAL=30000
 HEARTBEAT_TIMEOUT=40000
+EMAIL_SEND_INTERVAL_MS=10000
 ```
 
 **4. 初始化数据库**
@@ -346,7 +347,7 @@ function t(key) {
 
 SuixinChat is a **full-featured real-time chat website** integrating chat rooms, personal cloud storage, cloud notes, and an admin dashboard. It features a fresh green design with responsive mobile and desktop support.
 
-> **Current Version: v2.5.0** | Default interface language is Chinese (Simplified). For instructions on modifying the language, please refer to the [🌐 Internationalization](#-internationalization) section below.
+> **Current Version: v3.0.0** | Default interface language is Chinese (Simplified). For instructions on modifying the language, please refer to the [🌐 Internationalization](#-internationalization) section below.
 
 ---
 
@@ -500,7 +501,7 @@ PORT=3000
 SESSION_SECRET=your_random_secret_key_here
 NODE_ENV=production
 LOG_LEVEL=info
-USE_SQLITE_SESSION=false
+USE_SQLITE_SESSION=true
 
 # Email service (QQ Mail example)
 EMAIL_HOST=smtp.qq.com
@@ -514,6 +515,7 @@ MAX_MESSAGE_LENGTH=2000
 MESSAGE_RATE_LIMIT_MS=300
 HEARTBEAT_INTERVAL=30000
 HEARTBEAT_TIMEOUT=40000
+EMAIL_SEND_INTERVAL_MS=10000
 ```
 
 **4. Initialize database**
@@ -685,6 +687,51 @@ If this project helps you, please give it a Star!
 ---
 
 ## 更新日志 / Changelog
+
+### v3.0.0 (2026-08-16)
+本次版本修复了 **100+ 个 Bug**，涵盖安全漏洞、功能缺陷、性能问题与稳定性优化，重点如下：
+
+#### 🔒 安全加固（严重）
+- ✅ **修复存储型 XSS 漏洞**：系统消息中的用户名统一转义，防止通过用户名注入 HTML 执行脚本
+- ✅ **修复 Markdown XSS**：云笔记渲染转义原始 HTML、拦截 `javascript:`/`data:` 危险协议链接
+- ✅ **SQL 注入加固**：管理面板查询禁止多语句/PRAGMA/ATTACH 等特殊操作，表名白名单校验
+- ✅ **修复会话过期判断错误**：Session 时间统一为 SQLite 格式，过期会话不再被误判为有效
+- ✅ **上传目录隔离**：`/uploads` 仅暴露需要的子目录，`recalled/` 回收目录不再可直接访问
+- ✅ **验证码防重放**：验证码验证通过后立即删除，防止重复使用
+- ✅ **密码学安全随机数**：验证码与随机字符串改用 `crypto`，不再使用可预测的 `Math.random()`
+- ✅ **修复 bcrypt 前缀兼容**：支持 `$2a$/$2b$/$2y$` 全部哈希前缀，旧数据哈希不再无法登录
+- ✅ **安全响应头**：新增 X-Content-Type-Options / X-Frame-Options / X-XSS-Protection 等防护头
+- ✅ **封禁语义修正**：被封禁用户登录返回 403 状态码（原为 200）
+
+#### 🐛 功能缺陷修复
+- ✅ **修复协议强制弹窗**：`needAgree` 按协议版本动态判断，不再每次登录强制弹出
+- ✅ **新增协议版本管理**：管理员修改协议后版本自动递增，用户下次登录自动要求重新确认
+- ✅ **修复历史消息顺序**：进入聊天室加载最新 50 条并按时间正序显示（原为最早消息）
+- ✅ **修复搜索通配符**：消息搜索自动转义 `%` 和 `_`，搜索 `%` 不再匹配全部消息
+- ✅ **修复注册缺陷**：密码长度校验（≥6 位）、用户名长度校验（修改资料时同样生效）
+- ✅ **修复私聊缺陷**：增加长度限制、Emoji 替换、收发双方封禁检查、文件下载封禁检查
+- ✅ **修复群聊缺陷**：转让群主校验系统封禁、索引使用 IF NOT EXISTS、系统消息用户名修正
+- ✅ **修复网盘容量锁**：容量锁失败后自动恢复，不再永久失效导致上传全部失败
+- ✅ **修复容量统计**：递归统计所有子文件夹文件；管理员上传/删除容量一致性修复
+- ✅ **修复文件夹删除**：递归删除任意深度的子文件/子文件夹，同步更新容量
+- ✅ **修复 WebP 验证**：文件头魔数偏移修正，WebP 图片可正常上传
+- ✅ **修复单文件限制**：上传大小限制从数据库读取，管理员修改实时生效（含云笔记附件）
+- ✅ **修复星标权限**：管理员可查看所有用户星标；普通用户仅可操作自己文件树内文件
+- ✅ **修复附件重复插入**：云笔记附件自动去重
+- ✅ **修复通知缺失**：删除公告/更新公告后通过 Socket 实时通知客户端
+- ✅ **修复解散群文件泄漏**：解散群时同步删除群消息文件并扣减全局容量
+
+#### ⚡ 稳定性与性能
+- ✅ **修复数据库连接缺陷**：三个数据库的连接排队机制修复，flush 失败自动重试不丢数据
+- ✅ **Session 存储默认启用 SQLite**：重启不再丢失用户登录态
+- ✅ **修复私聊房间清理**：房间名前缀统一，管理员踢人可正确清理私聊房间
+- ✅ **递归改循环**：网盘/云笔记文件夹遍历改用循环 + 批量查询，避免深层目录栈溢出与 N+1
+- ✅ **参数全面校验**：分页 limit、容量值、日期、data_types 等入参校验，避免 NaN 崩溃
+
+#### 🎨 体验优化
+- ✅ 中文截断修复：预览/引用内容按 Unicode 码点截断，中文与 emoji 不再乱码
+- ✅ CSS 变量顺序与按钮样式统一、脚本加载顺序统一
+- ✅ 日志支持多级别记录，logs 目录自动创建；邮件服务未配置时给出明确警告
 
 ### v2.5.0 (2026-08-08)
 - ✅ **聊天室全新UI**：全面重构聊天室界面，手机端完美适配

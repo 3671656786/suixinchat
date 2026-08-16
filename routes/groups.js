@@ -1,10 +1,14 @@
 // routes/groups.js
 const express = require('express');
 const router = express.Router();
+const path = require('path');
+const fs = require('fs').promises;
 const db = require('../db/connection');
 const { isLoggedIn } = require('../middleware/auth');
 const { getIO, onlineUsers } = require('../socket');
 const { logToFile } = require('../utils/logger');
+const { escapeHtml } = require('../utils/helpers');
+const { safePath } = require('../utils/safePath');
 
 // ========== 配置 ==========
 const config = {
@@ -47,6 +51,23 @@ function isUserBanned(groupId, userId) {
         return !!ban;
     } catch (err) {
         console.error('[isUserBanned] 错误:', err);
+        return false;
+    }
+}
+
+// 修复 #16：检查系统级封禁（登录封禁或全部封禁）
+function isSystemBanned(userId) {
+    try {
+        const now = new Date().toISOString();
+        const ban = db.prepare(`
+            SELECT 1 FROM user_bans 
+            WHERE user_id = ? AND ban_type IN ('login', 'all')
+            AND (expires_at IS NULL OR expires_at > ?)
+            LIMIT 1
+        `).get(userId, now);
+        return !!ban;
+    } catch (err) {
+        console.error('[isSystemBanned] 错误:', err);
         return false;
     }
 }
@@ -152,6 +173,25 @@ const deleteGroupTransaction = db.transaction((groupId) => {
         throw new Error(`删除群数据失败: ${err.message}`);
     }
 });
+
+// 修复：解散群时清理群消息关联的物理文件，并扣减普通用户上传的全局容量，避免磁盘/容量泄漏
+async function cleanupGroupMessageFiles(groupId) {
+    const messages = db.prepare('SELECT userId, fileUrl FROM messages WHERE groupId = ? AND fileUrl IS NOT NULL').all(groupId);
+    const UPLOAD_BASE = path.join(__dirname, '../uploads');
+    for (const m of messages) {
+        try {
+            const fpath = safePath(UPLOAD_BASE, m.fileUrl);
+            if (!fpath) continue;
+            const stat = await fs.stat(fpath);
+            const uploader = db.prepare('SELECT role FROM users WHERE userId = ?').get(m.userId);
+            if (uploader && uploader.role === 'user' && stat.size > 0) {
+                db.prepare(`UPDATE system_config SET value = CAST(value AS INTEGER) + ?, updated_at = datetime('now') WHERE key = 'total_upload_bytes'`)
+                    .run(-stat.size);
+            }
+            await fs.unlink(fpath);
+        } catch (e) { /* 文件不存在或删除失败不影响解散 */ }
+    }
+}
 
 // ========== 获取群消息 ==========
 function getGroupMessages(groupId, limit, before) {
@@ -440,7 +480,7 @@ router.post('/api/groups/:id/request-join', isLoggedIn, (req, res) => {
                 for (const socket of sockets) {
                     socket.join(`group:${groupId}`);
                 }
-                io.to(`group:${groupId}`).emit('system message', `用户 ${req.user?.username || '用户'} 加入了群聊`);
+                io.to(`group:${groupId}`).emit('system message', `用户 ${escapeHtml(req.user?.username || '用户')} 加入了群聊`);
             }
 
             logToFile(`[加入群] 用户 ${userId} 直接加入群 ${groupId}`);
@@ -588,7 +628,7 @@ router.post('/api/groups/:id/join', isLoggedIn, (req, res) => {
             for (const socket of sockets) {
                 socket.join(`group:${groupId}`);
             }
-            io.to(`group:${groupId}`).emit('system message', `用户 ${req.user?.username || '用户'} 加入了群聊`);
+            io.to(`group:${groupId}`).emit('system message', `用户 ${escapeHtml(req.user?.username || '用户')} 加入了群聊`);
         }
 
         res.json({ success: true, message: '已加入群' });
@@ -598,7 +638,7 @@ router.post('/api/groups/:id/join', isLoggedIn, (req, res) => {
     }
 });
 
-router.post('/api/groups/:id/leave', isLoggedIn, (req, res) => {
+router.post('/api/groups/:id/leave', isLoggedIn, async (req, res) => {
     const groupId = Number(req.params.id);
     const userId = req.userId;
 
@@ -617,6 +657,8 @@ router.post('/api/groups/:id/leave', isLoggedIn, (req, res) => {
             if (otherMembers.count > 0) {
                 return res.status(400).json({ success: false, message: '群主不能退出，请先转让群主或解散群' });
             } else {
+                // 修复：清理群消息物理文件并扣减容量，再删除群数据
+                await cleanupGroupMessageFiles(groupId);
                 const results = deleteGroupTransaction(groupId);
                 
                 const io = getIO();
@@ -634,7 +676,7 @@ router.post('/api/groups/:id/leave', isLoggedIn, (req, res) => {
         const io = getIO();
         if (io) {
             cleanupUserGroupRooms(userId, groupId);
-            io.to(`group:${groupId}`).emit('system message', `用户 ${req.user?.username || '用户'} 退出了群聊`);
+            io.to(`group:${groupId}`).emit('system message', `用户 ${escapeHtml(req.user?.username || '用户')} 退出了群聊`);
         }
 
         res.json({ success: true, message: '已退出群' });
@@ -768,7 +810,7 @@ router.post('/api/groups/:id/kick', isLoggedIn, (req, res) => {
     }
 });
 
-router.delete('/api/groups/:id', isLoggedIn, (req, res) => {
+router.delete('/api/groups/:id', isLoggedIn, async (req, res) => {
     const groupId = Number(req.params.id);
     const userId = req.userId;
 
@@ -798,6 +840,8 @@ router.delete('/api/groups/:id', isLoggedIn, (req, res) => {
             io.to(`group:${groupId}`).emit('group_disbanded', { groupId });
         }
 
+        // 修复：清理群消息物理文件并扣减容量，再删除群数据
+        await cleanupGroupMessageFiles(groupId);
         const results = deleteGroupTransaction(groupId);
 
         logToFile(`[解散群] 用户 ${userId} 解散群 ${groupId}，删除数据: ${JSON.stringify(results)}`);
@@ -1062,9 +1106,9 @@ router.post('/api/groups/:id/invite', isLoggedIn, (req, res) => {
                 const sockets = getUserSockets(targetUserId);
                 for (const socket of sockets) {
                     socket.join(`group:${groupId}`);
-                    socket.emit('system message', `您被 ${req.user?.username || '用户'} 邀请加入了群聊`);
+                    socket.emit('system message', `您被 ${escapeHtml(req.user?.username || '用户')} 邀请加入了群聊`);
                 }
-                io.to(`group:${groupId}`).emit('system message', `用户 ${targetUserId} 被 ${req.user?.username || '用户'} 邀请加入了群聊`);
+                io.to(`group:${groupId}`).emit('system message', `用户 ${targetUserId} 被 ${escapeHtml(req.user?.username || '用户')} 邀请加入了群聊`);
             }
 
             logToFile(`[群邀请] 用户 ${userId} 邀请 ${targetUserId} 加入群 ${groupId}`);
@@ -1130,6 +1174,11 @@ router.post('/api/groups/:id/transfer', isLoggedIn, (req, res) => {
             return res.status(400).json({ success: false, message: '目标用户已被拉黑' });
         }
 
+        // 修复 #16：检查系统封禁，被系统封禁的用户不能成为群主
+        if (isSystemBanned(newOwnerId)) {
+            return res.status(400).json({ success: false, message: '目标用户已被系统封禁，无法转让群主' });
+        }
+
         const transferTransaction = db.transaction((groupId, userId, newOwnerId) => {
             db.prepare('UPDATE chat_groups SET ownerId = ? WHERE id = ?').run(newOwnerId, groupId);
             db.prepare('UPDATE group_members SET role = ? WHERE groupId = ? AND userId = ?').run('admin', groupId, userId);
@@ -1192,11 +1241,12 @@ function ensureIndexes() {
 }
 
 function getIndexSQL(indexName) {
+    // 修复 #15：使用 IF NOT EXISTS 防止重复创建索引报错
     const indexMap = {
-        'idx_group_members_group_user': 'CREATE INDEX idx_group_members_group_user ON group_members(groupId, userId)',
-        'idx_messages_group_id': 'CREATE INDEX idx_messages_group_id ON messages(groupId, id)',
-        'idx_group_join_requests_group_user_status': 'CREATE INDEX idx_group_join_requests_group_user_status ON group_join_requests(group_id, user_id, status)',
-        'idx_group_ban_list_group_user': 'CREATE INDEX idx_group_ban_list_group_user ON group_ban_list(group_id, user_id)'
+        'idx_group_members_group_user': 'CREATE INDEX IF NOT EXISTS idx_group_members_group_user ON group_members(groupId, userId)',
+        'idx_messages_group_id': 'CREATE INDEX IF NOT EXISTS idx_messages_group_id ON messages(groupId, id)',
+        'idx_group_join_requests_group_user_status': 'CREATE INDEX IF NOT EXISTS idx_group_join_requests_group_user_status ON group_join_requests(group_id, user_id, status)',
+        'idx_group_ban_list_group_user': 'CREATE INDEX IF NOT EXISTS idx_group_ban_list_group_user ON group_ban_list(group_id, user_id)'
     };
     return indexMap[indexName] || null;
 }

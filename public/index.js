@@ -152,11 +152,21 @@ async function handleAuth() {
         var account = accountInput.value.trim();
         var password = passwordInput.value.trim();
         if (!account || !password) { authError.innerText = '账号和密码不能为空'; return; }
-        var data = await window.apiRequest('/api/login', 'POST', { account: account, password: password });
-        if (data.success) {
-            currentUser = data.user;
-            showAgreementModal(true);
-        } else authError.innerText = data.message;
+        try {
+            var data = await window.apiRequest('/api/login', 'POST', { account: account, password: password });
+            // 修复 #1：仅当协议版本变化（needAgree）时才强制弹出协议
+            if (data.success) {
+                currentUser = data.user;
+                if (data.needAgree) {
+                    showAgreementModal(true);
+                } else {
+                    afterLogin();
+                }
+            } else authError.innerText = data.message;
+        } catch (err) {
+            // 修复 #62：显示 403 封禁等错误信息
+            authError.innerText = err.message || '登录失败，请重试';
+        }
     } else {
         var username = usernameInput.value.trim();
         var password2 = passwordInput.value.trim();
@@ -208,7 +218,7 @@ function showUpdatesPopup(updates) {
         html += '<div style="background:#f9f9f9;border-radius:16px;padding:16px;margin-bottom:12px;border-left:4px solid #07c160;">';
         html += '  <div style="font-weight:bold;color:#07c160;">v' + window.escapeHtml(u.version) + ' - ' + window.escapeHtml(u.title) + '</div>';
         html += '  <div style="font-size:12px;color:#888;margin-bottom:8px;">' + new Date(u.created_at).toLocaleString() + '</div>';
-        var preview = u.content.length > 200 ? u.content.substring(0, 200) + '...' : u.content;
+        var preview = window.truncateText(u.content, 200);
         html += '  <div style="white-space:pre-wrap;font-size:14px;color:#333;">' + window.escapeHtml(preview) + '</div>';
         html += '  <div style="margin-top:8px;"><a href="/updates" style="color:#07c160;text-decoration:none;">查看全部 →</a></div>';
         html += '</div>';

@@ -7,11 +7,13 @@ function isLoggedIn(req, res, next) {
     if (!userId) {
         return res.status(401).json({ success: false, message: '未登录' });
     }
-    const user = db.prepare('SELECT userId FROM users WHERE userId = ?').get(userId);
+    // 修复 #13：同时加载完整用户信息到 req.user，供路由使用（如用户名、角色）
+    const user = db.prepare('SELECT userId, username, avatarUrl, role, email FROM users WHERE userId = ?').get(userId);
     if (!user) {
         return res.status(401).json({ success: false, message: '用户不存在' });
     }
     req.userId = userId;
+    req.user = user;
     next();
 }
 

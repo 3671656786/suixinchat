@@ -58,9 +58,11 @@ router.delete('/api/announcements/:id', isLoggedIn, (req, res) => {
         // 删除公告
         db.prepare('DELETE FROM announcements WHERE id = ?').run(id);
         
-        // 修复 N12: 未来如果有公告已读表，在此清理关联数据
-        // 目前没有 announcement_reads 表，但预留清理逻辑
-        // 如果有其他关联表，在此添加清理代码
+        // 修复：删除公告后通过 Socket 通知客户端，保持公告列表实时同步
+        const io = getIO();
+        if (io) {
+            io.to('chatroom').emit('announcement deleted', { id: Number(id) });
+        }
         
         console.log(`[公告] 管理员 ${user.username} 删除公告 ID:${id}: ${announcement.content.substring(0, 50)}...`);
         res.json({ success: true });

@@ -10,12 +10,14 @@ const { logToFile } = require('../utils/logger');
 const { getIO } = require('../socket');
 
 // ========== 获取当前最大版本号 ==========
+// 修复 #51：版本号格式验证，非 "x.y" 格式时安全回退，避免 split 异常
 function getNextVersion() {
     const row = db.prepare('SELECT version FROM updates ORDER BY id DESC LIMIT 1').get();
     if (!row) return '0.1';
-    const parts = row.version.split('.');
-    const major = parseInt(parts[0]) || 0;
-    const minor = parseInt(parts[1]) || 0;
+    const match = String(row.version).match(/^(\d+)\.(\d+)$/);
+    if (!match) return '0.1';
+    const major = parseInt(match[1]) || 0;
+    const minor = parseInt(match[2]) || 0;
     return `${major}.${minor + 1}`;
 }
 
@@ -42,7 +44,11 @@ router.get('/api/updates', isLoggedIn, (req, res) => {
             params.push(endDate);
         }
         sql += ' ORDER BY created_at DESC LIMIT ?';
-        params.push(parseInt(limit));
+        // 修复：limit 参数校验，避免 NaN 导致查询失败
+        let parsedLimit = parseInt(limit);
+        if (isNaN(parsedLimit) || parsedLimit < 1) parsedLimit = 50;
+        if (parsedLimit > 200) parsedLimit = 200;
+        params.push(parsedLimit);
         const updates = db.prepare(sql).all(...params);
         res.json({ success: true, updates });
     } catch (err) {
@@ -135,6 +141,8 @@ router.post('/api/updates', isAdmin, async (req, res) => {
                     let successCount = 0;
                     let failCount = 0;
                     const io = getIO();
+                    // 修复 #50：邮件发送间隔可通过环境变量调整（默认10秒，防止被标记为垃圾邮件）
+                    const SEND_INTERVAL_MS = parseInt(process.env.EMAIL_SEND_INTERVAL_MS) || 10000;
 
                     for (let i = 0; i < emailList.length; i++) {
                         const recipient = emailList[i];
@@ -142,15 +150,18 @@ router.post('/api/updates', isAdmin, async (req, res) => {
                         const username = recipient.username || '用户';
 
                         try {
+                            // 修复 #48：邮件内容转义，防止 XSS
+                            const safeTitle = require('../utils/helpers').escapeHtml(title);
+                            const safeContent = require('../utils/helpers').escapeHtml(content);
                             const mailContent = `
-                                <h2>📢 ${title}</h2>
+                                <h2>📢 ${safeTitle}</h2>
                                 <p><strong>版本：</strong>v${version}</p>
                                 <hr>
-                                <p>${content.replace(/\n/g, '<br>')}</p>
+                                <p>${safeContent.replace(/\n/g, '<br>')}</p>
                                 <hr>
                                 <p style="color:#999; font-size:12px;">此邮件由随心聊系统自动发送，请勿回复。</p>
                             `;
-                            await sendMail(email, `【随心聊】${title}`, mailContent);
+                            await sendMail(email, `【随心聊】${safeTitle}`, mailContent);
                             successCount++;
                             logToFile(`[更新公告邮件] 已发送至 ${email} (${i + 1}/${emailList.length})`);
                         } catch (err) {
@@ -169,7 +180,7 @@ router.post('/api/updates', isAdmin, async (req, res) => {
                         }
 
                         if (i < emailList.length - 1) {
-                            await new Promise(resolve => setTimeout(resolve, 10000));
+                            await new Promise(resolve => setTimeout(resolve, SEND_INTERVAL_MS));
                         }
                     }
 
@@ -214,6 +225,11 @@ router.delete('/api/updates/:id', isAdmin, (req, res) => {
         if (!update) return res.status(404).json({ success: false, message: '公告不存在' });
         db.prepare('DELETE FROM user_read_updates WHERE update_id = ?').run(id);
         db.prepare('DELETE FROM updates WHERE id = ?').run(id);
+        // 修复 #52：删除后通过 Socket 通知客户端，保持公告列表实时更新
+        const io = getIO();
+        if (io) {
+            io.emit('update_deleted', { id });
+        }
         logToFile(`[更新公告] 管理员删除公告 v${update.version}: ${update.title}`);
         res.json({ success: true });
     } catch (err) {

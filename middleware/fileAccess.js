@@ -11,15 +11,20 @@ function getUserRootId(userId) {
     return Number(folder.id);
 }
 
+// 修复：循环实现代替递归，避免深层目录导致调用栈溢出
 function isUnderUserRoot(nodeId, userRootId) {
-    const nid = Number(nodeId);
+    let currentId = Number(nodeId);
     const urid = Number(userRootId);
-    if (nid === urid) return true;
-    const node = db.prepare('SELECT parentId FROM file_nodes WHERE id = ?').get(nid);
-    if (!node) return false;
-    if (node.parentId === 0) return false;
-    if (node.parentId === urid) return true;
-    return isUnderUserRoot(node.parentId, urid);
+    const visited = new Set();
+    while (currentId !== urid) {
+        if (visited.has(currentId)) return false; // 防循环引用
+        visited.add(currentId);
+        const node = db.prepare('SELECT parentId FROM file_nodes WHERE id = ?').get(currentId);
+        if (!node) return false;
+        if (node.parentId === 0) return false;
+        currentId = Number(node.parentId);
+    }
+    return true;
 }
 
 function checkFileAccess(req, res, next) {

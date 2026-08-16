@@ -12,6 +12,9 @@ db._waitReady = () => db._readyPromise;
 
 let pendingOps = [];
 let _db = null;
+// 修复 #53：真实执行函数提升为模块级变量，db.exec 统一为带 pending 检查的入口，
+// 避免顶层同步覆盖与 IIFE 异步赋值互相覆盖导致 pending 机制失效
+let realExec = null;
 
 // ========== 在模块加载时立即定义 transaction 方法 ==========
 // 确保 groups.js 加载时就能访问到 db.transaction
@@ -81,6 +84,9 @@ db.transaction = function(fn) {
         };
 
         db.prepare = function(sql) {
+            if (!_db) {
+                throw new Error('数据库尚未初始化，请稍后重试');
+            }
             return {
                 all(...p) {
                     const s = _db.prepare(sql);
@@ -121,14 +127,14 @@ db.transaction = function(fn) {
             };
         };
 
-        db.exec = function(sql) {
+        realExec = function(sql) {
             _db.run(sql);
             markDirty();
         };
 
         db.close = closeAll;
 
-        // 重放待执行的操作
+        // 重放待执行的操作（走 db.exec -> realExec）
         for (const op of pendingOps) {
             try {
                 db.exec(op.sql);
@@ -144,13 +150,12 @@ db.transaction = function(fn) {
     }
 })();
 
-// ========== 在数据库就绪前缓存操作 ==========
-const originalExec = db.exec;
+// ========== 修复 #53/#4：统一执行入口（数据库就绪前缓存操作，就绪后转发给 realExec） ==========
 db.exec = function _pending(sql) {
     if (_db === null) {
         pendingOps.push({ sql });
-    } else {
-        originalExec(sql);
+    } else if (realExec) {
+        realExec(sql);
     }
 };
 

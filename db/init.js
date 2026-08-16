@@ -5,6 +5,8 @@ const { DEFAULT_AVATAR_URL, DEFAULT_CAPACITY } = require('../config');
 
 async function initDatabase() {
     await db._waitReady();
+    // 修复 #33：在创建表之前启用外键约束
+    db.exec('PRAGMA foreign_keys = ON;');
     db.exec(`
         -- ========== 用户相关表 ==========
         CREATE TABLE IF NOT EXISTS users (
@@ -69,6 +71,8 @@ async function initDatabase() {
             ip TEXT,
             attempt_time DATETIME DEFAULT (datetime('now'))
         );
+        -- 修复 #78：添加索引，避免定期清理时全表扫描
+        CREATE INDEX IF NOT EXISTS idx_reg_attempts_ip_time ON reg_attempts(ip, attempt_time);
 
         -- ========== 公告表 ==========
         CREATE TABLE IF NOT EXISTS announcements (
@@ -148,40 +152,6 @@ async function initDatabase() {
         CREATE INDEX IF NOT EXISTS idx_join_requests_group ON group_join_requests(group_id);
         CREATE INDEX IF NOT EXISTS idx_join_requests_status ON group_join_requests(status);
 
-        -- ========== 云笔记表 ==========
-        CREATE TABLE IF NOT EXISTS notes (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            title TEXT,
-            content TEXT,
-            createdAt DATETIME DEFAULT (datetime('now')),
-            updatedAt DATETIME DEFAULT (datetime('now')),
-            createdBy INTEGER,
-            folderId INTEGER DEFAULT 0
-        );
-        CREATE INDEX IF NOT EXISTS idx_notes_folderId ON notes(folderId);
-
-        CREATE TABLE IF NOT EXISTS note_attachments (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            noteId INTEGER NOT NULL,
-            fileUrl TEXT NOT NULL,
-            fileName TEXT NOT NULL,
-            fileType TEXT,
-            fileSize INTEGER,
-            createdAt DATETIME DEFAULT (datetime('now'))
-        );
-
-        -- ========== 笔记文件夹表 ==========
-        CREATE TABLE IF NOT EXISTS note_folders (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL,
-            parentId INTEGER DEFAULT 0,
-            createdBy INTEGER NOT NULL,
-            createdAt DATETIME DEFAULT (datetime('now')),
-            updatedAt DATETIME DEFAULT (datetime('now')),
-            FOREIGN KEY (createdBy) REFERENCES users(userId)
-        );
-        CREATE INDEX IF NOT EXISTS idx_note_folders_parent ON note_folders(parentId);
-
         -- ========== 邮箱验证码表 ==========
         CREATE TABLE IF NOT EXISTS email_verifications (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -190,6 +160,8 @@ async function initDatabase() {
             expires_at DATETIME NOT NULL,
             created_at DATETIME DEFAULT (datetime('now'))
         );
+        -- 修复 #79：添加索引，加速验证码查询与清理
+        CREATE INDEX IF NOT EXISTS idx_email_verifications_email ON email_verifications(email);
 
         -- ========== 验证码频率限制表 ==========
         CREATE TABLE IF NOT EXISTS verification_cooldowns (
@@ -308,7 +280,10 @@ async function initDatabase() {
     // ========== 初始化系统配置 ==========
     const maxGlobal = db.prepare('SELECT value FROM system_config WHERE key = ?').get('max_global_upload_bytes');
     if (!maxGlobal) {
-        const defaultGlobal = DEFAULT_CAPACITY.global || 10 * 1024 * 1024 * 1024;
+        // 修复：DEFAULT_CAPACITY.global 为 0 时不再错误回退
+        const defaultGlobal = (DEFAULT_CAPACITY.global && DEFAULT_CAPACITY.global > 0)
+            ? DEFAULT_CAPACITY.global
+            : 10 * 1024 * 1024 * 1024;
         db.prepare('INSERT INTO system_config (key, value) VALUES (?, ?)').run(
             'max_global_upload_bytes',
             defaultGlobal.toString()
@@ -331,7 +306,10 @@ async function initDatabase() {
 
     const userDefault = db.prepare('SELECT value FROM system_config WHERE key = ?').get('user_default_capacity_bytes');
     if (!userDefault) {
-        const defaultUser = DEFAULT_CAPACITY.user || 100 * 1024 * 1024;
+        // 修复：DEFAULT_CAPACITY.user 为 0 时不再错误回退
+        const defaultUser = (DEFAULT_CAPACITY.user && DEFAULT_CAPACITY.user > 0)
+            ? DEFAULT_CAPACITY.user
+            : 100 * 1024 * 1024;
         db.prepare('INSERT INTO system_config (key, value) VALUES (?, ?)').run(
             'user_default_capacity_bytes',
             defaultUser.toString()
@@ -344,8 +322,6 @@ async function initDatabase() {
         db.prepare('INSERT INTO agreement_version (id, version) VALUES (1, 1)').run();
         console.log('✅ 已初始化协议版本');
     }
-
-    db.exec('PRAGMA foreign_keys = ON;');
 
     try {
         db.exec("DELETE FROM reg_attempts WHERE attempt_time < datetime('now', '-7 days')");

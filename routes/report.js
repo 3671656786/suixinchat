@@ -188,7 +188,12 @@ router.get('/api/admin/report/config', isAdmin, (req, res) => {
     try {
         const config = db.prepare('SELECT * FROM report_config WHERE id = 1').get();
         if (!config) return res.json({ success: false, message: '配置不存在' });
-        config.data_types = config.data_types ? JSON.parse(config.data_types) : [];
+        // 修复 #47：data_types JSON 解析添加 try-catch
+        try {
+            config.data_types = config.data_types ? JSON.parse(config.data_types) : [];
+        } catch (e) {
+            config.data_types = [];
+        }
         res.json({ success: true, config });
     } catch (err) {
         res.status(500).json({ success: false, message: err.message });
@@ -202,6 +207,10 @@ router.post('/api/admin/report/config', isAdmin, (req, res) => {
     const cronParts = cron.trim().split(' ');
     if (cronParts.length !== 5 && cronParts.length !== 6) {
         return res.status(400).json({ success: false, message: 'Cron 表达式格式错误，应为 5 或 6 段' });
+    }
+    // 修复：data_types 必须是数组，防止类型错误导致报表生成崩溃
+    if (data_types !== undefined && !Array.isArray(data_types)) {
+        return res.status(400).json({ success: false, message: 'data_types 必须是数组' });
     }
     const dataTypesJson = JSON.stringify(data_types || []);
     db.prepare(`UPDATE report_config SET enabled = ?, cron = ?, emails = ?, data_types = ?, updated_at = CURRENT_TIMESTAMP WHERE id = 1`)
@@ -217,10 +226,20 @@ router.post('/api/admin/report/send', isAdmin, async (req, res) => {
         const config = db.prepare('SELECT * FROM report_config WHERE id = 1').get();
         if (!config) return res.status(400).json({ success: false, message: '未配置报表' });
         let dataTypes = customDataTypes;
-        if (!dataTypes || !dataTypes.length) {
-            dataTypes = config.data_types ? JSON.parse(config.data_types) : [];
+        // 修复：自定义 data_types 必须是数组
+        if (dataTypes !== undefined && !Array.isArray(dataTypes)) {
+            return res.status(400).json({ success: false, message: 'data_types 必须是数组' });
         }
-        const emails = config.emails.split(',').map(e => e.trim());
+        if (!dataTypes || !dataTypes.length) {
+            // 修复 #47：JSON 解析添加 try-catch
+            try {
+                dataTypes = config.data_types ? JSON.parse(config.data_types) : [];
+            } catch (e) {
+                dataTypes = [];
+            }
+        }
+        // 修复 #45：emails 为 null 时避免崩溃
+        const emails = (config.emails || '').split(',').map(e => e.trim()).filter(Boolean);
         if (emails.length === 0) return res.status(400).json({ success: false, message: '未配置收件邮箱' });
         const reportHtml = await generateReportHtml(dataTypes);
         for (const email of emails) {
@@ -237,6 +256,10 @@ router.post('/api/admin/report/send', isAdmin, async (req, res) => {
 router.post('/api/admin/report/preview', isAdmin, async (req, res) => {
     try {
         const { data_types } = req.body;
+        // 修复：data_types 必须是数组
+        if (!Array.isArray(data_types)) {
+            return res.status(400).json({ success: false, message: 'data_types 必须是数组' });
+        }
         const result = {};
         const settings = getSystemSettings();
         
@@ -269,6 +292,7 @@ router.post('/api/admin/report/preview', isAdmin, async (req, res) => {
             result.files = { totalFiles, totalSizeMB: (totalSize / 1024 / 1024).toFixed(2), totalFolders, starredFiles };
         }
         if (data_types.includes('online')) {
+            // 修复 #46：查询添加 LIMIT，避免用户量大时性能问题
             const onlineStats = db.prepare(`
                 SELECT u.username, COALESCE(SUM(s.duration), 0) as totalSeconds
                 FROM users u
@@ -276,6 +300,7 @@ router.post('/api/admin/report/preview', isAdmin, async (req, res) => {
                 GROUP BY u.userId
                 HAVING totalSeconds > 0
                 ORDER BY totalSeconds DESC
+                LIMIT 20
             `).all();
             result.online = onlineStats.map(u => ({ username: u.username, hours: (u.totalSeconds / 3600).toFixed(1) }));
         }
@@ -315,8 +340,15 @@ function initReportSchedule() {
         const config = db.prepare('SELECT * FROM report_config WHERE id = 1').get();
         if (!config || !config.enabled) return;
         const cron = config.cron;
-        const emails = config.emails.split(',').map(e => e.trim());
-        const dataTypes = config.data_types ? JSON.parse(config.data_types) : [];
+        // 修复 #45：emails 为 null 时避免崩溃
+        const emails = (config.emails || '').split(',').map(e => e.trim()).filter(Boolean);
+        // 修复 #47：data_types JSON 解析添加 try-catch
+        let dataTypes = [];
+        try {
+            dataTypes = config.data_types ? JSON.parse(config.data_types) : [];
+        } catch (e) {
+            dataTypes = [];
+        }
         if (!cron || emails.length === 0 || dataTypes.length === 0) return;
         
         scheduledJob = schedule.scheduleJob(cron, async function() {

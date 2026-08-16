@@ -17,21 +17,23 @@ const { validateFileType } = require('../utils/fileValidator');
 const DEBUG_PATH = process.env.NODE_ENV === 'development';
 
 // ========== 辅助函数：循环获取所有子文件夹ID（防死循环） ==========
+// 修复 #74：批量查询代替逐层 N+1 查询，深层目录性能更优
 function getAllSubFolderIds(parentId) {
     const allIds = [];
-    const queue = [parentId];
-    const visited = new Set();
-    while (queue.length > 0) {
-        const currentId = queue.shift();
-        if (visited.has(currentId)) continue;
-        visited.add(currentId);
-        const children = notesDb.prepare('SELECT id FROM note_folders WHERE parentId = ?').all(currentId);
+    const visited = new Set([parentId]);
+    let currentLevel = [parentId];
+    while (currentLevel.length > 0) {
+        const placeholders = currentLevel.map(() => '?').join(',');
+        const children = notesDb.prepare(`SELECT id FROM note_folders WHERE parentId IN (${placeholders})`).all(...currentLevel);
+        const nextLevel = [];
         for (const child of children) {
             if (!visited.has(child.id)) {
+                visited.add(child.id);
                 allIds.push(child.id);
-                queue.push(child.id);
+                nextLevel.push(child.id);
             }
         }
+        currentLevel = nextLevel;
     }
     return allIds;
 }
@@ -61,6 +63,13 @@ function getSafeFilePath(fileUrl) {
         const shortPattern = /^(notes_files\/)/i;
         if (shortPattern.test(filename)) {
             filename = filename.replace(shortPattern, '');
+        }
+
+        // 修复 #27：先解码 URL 编码（如 %2e%2e、%2f），防止绕过 '..' 检查
+        try {
+            filename = decodeURIComponent(filename);
+        } catch (e) {
+            // 非法 URL 编码（如含字面 %），保留原值继续检查
         }
 
         // 防止路径遍历
@@ -107,6 +116,8 @@ function isFileReferencedInContent(content, fileUrl) {
     if (!content || !fileUrl) return false;
     try {
         const cleanUrl = fileUrl.split('?')[0].split('#')[0];
+        // 修复 #29：先做快速包含检查，避免对每个附件都执行正则匹配（大量附件时性能优化）
+        if (!content.includes(cleanUrl)) return false;
         const escapedUrl = cleanUrl.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
         const patterns = [
             new RegExp(`!\\[.*?\\]\\(${escapedUrl}(\\s.*?)?\\)`),
@@ -165,6 +176,18 @@ function recordTraffic(userId, type, bytes, path, options = {}) {
         logToFile(`[流量记录] 失败: userId=${userId}, type=${type}, bytes=${bytes}, error=${err.message}`);
         if (!ignoreErrors) throw err;
     }
+}
+
+// 修复 #28：附件大小限制从 system_config 读取（管理员后台可调整）
+function getNotesMaxFileSize() {
+    try {
+        const row = mainDb.prepare('SELECT value FROM system_config WHERE key = ?').get('max_file_size_bytes');
+        if (row) {
+            const v = parseInt(row.value);
+            if (!isNaN(v) && v > 0) return v;
+        }
+    } catch (e) {}
+    return 200 * 1024 * 1024;
 }
 
 // ========== 笔记文件夹管理 ==========
@@ -364,8 +387,10 @@ router.put('/api/notes/:id/move', isLoggedIn, checkNotesBan, (req, res) => {
 router.post('/api/notes/upload', isLoggedIn, checkNotesBan, (req, res, next) => {
     const user = mainDb.prepare('SELECT role FROM users WHERE userId = ?').get(req.userId);
     if (!user || user.role !== 'admin') return res.status(403).json({ success: false, message: '仅管理员可上传附件' });
-    next();
-}, multer({ storage, fileFilter, limits: { fileSize: 200 * 1024 * 1024 } }).array('files'), (req, res) => {
+    // 修复 #28：每次请求动态读取配置的单文件大小限制（multer 实例在创建时固定 limits）
+    const uploader = multer({ storage, fileFilter, limits: { fileSize: getNotesMaxFileSize() } }).array('files');
+    uploader(req, res, next);
+}, (req, res) => {
     if (!req.files || req.files.length === 0) return res.status(400).json({ success: false, message: '未上传文件' });
     for (const file of req.files) {
         const validation = validateFileType(file.path, file.mimetype);
@@ -515,11 +540,18 @@ router.post('/api/notes', isLoggedIn, checkNotesBan, (req, res) => {
         let attachCount = 0;
         if (attachments && attachments.length) {
             const stmt = notesDb.prepare(`INSERT INTO note_attachments (noteId, fileUrl, fileName, fileType, fileSize, createdAt) VALUES (?, ?, ?, ?, ?, datetime('now'))`);
+            // 修复 #30：对重复 fileUrl 去重，避免插入重复附件记录
+            const seenUrls = new Set();
             for (const att of attachments) {
                 if (!att.fileUrl || !att.fileName || !isPathSafe(att.fileUrl)) {
                     logToFile(`[创建笔记] 跳过无效附件: ${JSON.stringify(att)}`);
                     continue;
                 }
+                if (seenUrls.has(att.fileUrl)) {
+                    logToFile(`[创建笔记] 跳过重复附件: ${att.fileUrl}`);
+                    continue;
+                }
+                seenUrls.add(att.fileUrl);
                 stmt.run(noteId, att.fileUrl, att.fileName, att.fileType || null, att.fileSize || 0);
                 attachCount++;
             }

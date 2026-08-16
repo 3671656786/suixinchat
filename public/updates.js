@@ -105,7 +105,14 @@ function renderUpdates(updates) {
         html += '    <div class="update-time">' + new Date(u.created_at).toLocaleString() + '</div>';
         html += '  </div>';
         html += '  <div class="update-title">' + window.escapeHtml(u.title) + '</div>';
-        var previewContent = u.content.length > 300 ? u.content.substring(0, 300) + '...' : u.content;
+        // 修复 #73：按 Unicode 码点截断，避免截断中文字符导致乱码
+        var contentStr = String(u.content || '');
+        var previewContent;
+        if (contentStr.length > 300) {
+            previewContent = Array.from(contentStr).slice(0, 300).join('') + '...';
+        } else {
+            previewContent = contentStr;
+        }
         html += '  <div class="update-content">' + window.escapeHtml(previewContent) + '</div>';
         html += '  <div class="update-actions">';
         html += '    <button class="btn-secondary view-detail" data-id="' + u.id + '">📖 查看全文</button>';

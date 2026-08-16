@@ -51,3 +51,7 @@ cmd.bat
 agreement.txt
 modify_requests/
 clean_requests/
+
+# 内部审查文档（不参与版本控制）
+BUG清单.html
+介绍词.html

@@ -56,10 +56,12 @@ router.get('/api/operations/stats', isLoggedIn, (req, res) => {
         const maxRow = db.prepare('SELECT value FROM system_config WHERE key = ?').get('max_global_upload_bytes');
         const globalUsed = usedRow ? parseInt(usedRow.value) : 0;
         const globalMax = maxRow ? parseInt(maxRow.value) : 10 * 1024 * 1024 * 1024;
+        // 修复 #43：globalMax 为 0 时 percent 计算为 Infinity，修正为 0
+        const percent = globalMax > 0 ? (globalUsed / globalMax) * 100 : 0;
         result.globalStorage = {
             usedGB: (globalUsed / 1024 / 1024 / 1024).toFixed(2),
             maxGB: (globalMax / 1024 / 1024 / 1024).toFixed(0),
-            percent: (globalUsed / globalMax) * 100
+            percent: percent
         };
 
         // 封禁统计
@@ -107,19 +109,33 @@ router.get('/api/admin/capacity/config', isAdmin, (req, res) => {
 // 更新全局容量
 router.post('/api/admin/capacity/global', isAdmin, (req, res) => {
     const { maxGlobalGB } = req.body;
-    if (!maxGlobalGB || maxGlobalGB < 1) {
+    // 修复：容量值校验，避免 NaN 写入配置
+    const gb = parseFloat(maxGlobalGB);
+    if (isNaN(gb) || gb < 1) {
         return res.status(400).json({ success: false, message: '请输入有效的容量值（至少1GB）' });
     }
     try {
-        const maxBytes = parseFloat(maxGlobalGB) * 1024 * 1024 * 1024;
+        const maxBytes = gb * 1024 * 1024 * 1024;
         db.prepare('INSERT OR REPLACE INTO system_config (key, value) VALUES (?, ?)').run('max_global_upload_bytes', maxBytes.toString());
-        logToFile(`管理员修改全局容量为 ${maxGlobalGB} GB`);
-        res.json({ success: true, message: `全局容量已更新为 ${maxGlobalGB} GB` });
+        logToFile(`管理员修改全局容量为 ${gb} GB`);
+        res.json({ success: true, message: `全局容量已更新为 ${gb} GB` });
     } catch (err) {
         console.error('更新全局容量失败:', err);
         res.status(500).json({ success: false, message: err.message });
     }
 });
+
+// 修复 #44/#77：用户默认容量从 system_config 读取，不再硬编码 100MB
+function getUserDefaultMaxBytes() {
+    try {
+        const row = db.prepare('SELECT value FROM system_config WHERE key = ?').get('user_default_capacity_bytes');
+        if (row) {
+            const v = parseInt(row.value);
+            if (!isNaN(v) && v > 0) return v;
+        }
+    } catch (e) {}
+    return 100 * 1024 * 1024;
+}
 
 // 获取单个用户的容量
 router.get('/api/admin/capacity/user/:userId', isAdmin, (req, res) => {
@@ -137,7 +153,8 @@ router.get('/api/admin/capacity/user/:userId', isAdmin, (req, res) => {
         }
         const customRow = db.prepare('SELECT value FROM system_config WHERE key = ?').get('user_capacity_' + userId);
         const customMax = customRow ? parseInt(customRow.value) : null;
-        const defaultMax = 100 * 1024 * 1024;
+        // 修复 #77：默认容量从 system_config 读取
+        const defaultMax = getUserDefaultMaxBytes();
         
         res.json({
             success: true,
@@ -181,7 +198,8 @@ router.post('/api/admin/capacity/user', isAdmin, (req, res) => {
             res.json({ success: true, message: '已恢复默认容量 100MB' });
         } else {
             const maxBytes = parseFloat(maxMB) * 1024 * 1024;
-            if (maxBytes < 1) {
+            // 修复：容量值校验，避免 NaN 写入
+            if (isNaN(maxBytes) || maxBytes < 1) {
                 return res.status(400).json({ success: false, message: '容量必须大于0' });
             }
             db.prepare('INSERT OR REPLACE INTO system_config (key, value) VALUES (?, ?)').run('user_capacity_' + userId, maxBytes.toString());
@@ -197,14 +215,16 @@ router.post('/api/admin/capacity/user', isAdmin, (req, res) => {
 // 修改单文件大小限制
 router.post('/api/admin/capacity/file-size', isAdmin, (req, res) => {
     const { maxFileSizeMB } = req.body;
-    if (!maxFileSizeMB || maxFileSizeMB < 1) {
+    // 修复：容量值校验，避免 NaN 写入配置
+    const mb = parseFloat(maxFileSizeMB);
+    if (isNaN(mb) || mb < 1) {
         return res.status(400).json({ success: false, message: '请输入有效的文件大小限制（至少1MB）' });
     }
     try {
-        const maxBytes = parseFloat(maxFileSizeMB) * 1024 * 1024;
+        const maxBytes = mb * 1024 * 1024;
         db.prepare('INSERT OR REPLACE INTO system_config (key, value) VALUES (?, ?)').run('max_file_size_bytes', maxBytes.toString());
-        logToFile(`管理员修改单文件大小限制为 ${maxFileSizeMB} MB`);
-        res.json({ success: true, message: `单文件大小限制已更新为 ${maxFileSizeMB} MB` });
+        logToFile(`管理员修改单文件大小限制为 ${mb} MB`);
+        res.json({ success: true, message: `单文件大小限制已更新为 ${mb} MB` });
     } catch (err) {
         console.error('更新文件大小限制失败:', err);
         res.status(500).json({ success: false, message: err.message });
@@ -237,7 +257,8 @@ router.get('/api/admin/capacity/users', isAdmin, (req, res) => {
             }
             var customRow = db.prepare('SELECT value FROM system_config WHERE key = ?').get('user_capacity_' + u.userId);
             var customMax = customRow ? parseInt(customRow.value) : null;
-            var defaultMax = 100 * 1024 * 1024;
+            // 修复 #44：默认容量从 system_config 读取
+            var defaultMax = getUserDefaultMaxBytes();
             var effectiveMax = customMax || defaultMax;
             
             result.push({

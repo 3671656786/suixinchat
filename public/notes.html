@@ -372,6 +372,18 @@
         .editor-toolbar .toolbar-right .btn-secondary:hover {
             background: #e4e6eb;
         }
+        .editor-toolbar .toolbar-right .edit-read-btn {
+            background: #07c160;
+            color: white;
+            border: none;
+            border-radius: 20px;
+            padding: 4px 14px;
+            font-size: 12px;
+            cursor: pointer;
+        }
+        .editor-toolbar .toolbar-right .edit-read-btn:hover {
+            background: #06ad56;
+        }
 
         /* ===== 编辑器主体 ===== */
         .editor-body {
@@ -379,7 +391,7 @@
             flex: 1;
             overflow: hidden;
             background: #f6f8fa;
-            flex-direction: column; /* 手机端默认单栏 */
+            flex-direction: column;
         }
 
         /* 左侧：编辑区 */
@@ -567,7 +579,7 @@
             background: #f0f2f5;
         }
 
-        /* ===== 右侧：信息栏（移动端在编辑器下方） ===== */
+        /* ===== 右侧：信息栏（电脑端） ===== */
         .editor-sidebar {
             width: 100%;
             flex-shrink: 0;
@@ -604,7 +616,7 @@
             cursor: not-allowed;
         }
 
-        /* ===== 附件区域（可折叠） ===== */
+        /* ===== 附件区域 ===== */
         .editor-sidebar .sidebar-section.attachment-section .section-header {
             display: flex;
             justify-content: space-between;
@@ -723,6 +735,58 @@
             display: none;
         }
 
+        /* ===== 代码块样式 ===== */
+        .code-block-wrapper {
+            margin: 16px 0;
+            border-radius: 8px;
+            overflow: hidden;
+            background: #1e1e1e;
+            border: 1px solid #333;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+        }
+        .code-block-wrapper .code-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 6px 12px;
+            background: #2d2d2d;
+            border-bottom: 1px solid #444;
+            font-size: 12px;
+            color: #999;
+            font-family: monospace;
+        }
+        .code-block-wrapper pre {
+            margin: 0;
+            padding: 12px 16px;
+            overflow-x: auto;
+            background: #1e1e1e;
+            font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+            font-size: 13px;
+            line-height: 1.7;
+            color: #d4d4d4;
+        }
+        .code-block-wrapper code {
+            font-family: inherit;
+            color: inherit;
+            background: transparent;
+            padding: 0;
+        }
+        .copy-code-btn {
+            background: transparent;
+            border: 1px solid #555;
+            color: #ccc;
+            padding: 2px 10px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 12px;
+            transition: all 0.2s;
+        }
+        .copy-code-btn:hover {
+            background: #444;
+            border-color: #888;
+            color: #fff;
+        }
+
         /* ===== 桌面端（≥768px）双栏布局 ===== */
         @media (min-width: 768px) {
             .editor-body {
@@ -743,25 +807,33 @@
             .editor-toolbar .toolbar-left .editor-title {
                 max-width: 300px;
             }
-            /* 桌面端始终展开附件 */
-            #attachmentContent.collapsed {
-                max-height: 600px !important;
-                overflow: visible;
-            }
             .editor-sidebar .sidebar-section.attachment-section .section-header .toggle-icon {
                 display: none;
             }
+
+            /* 电脑端阅读模式：保持侧边栏可见 */
+            .modal.read-mode .editor-sidebar {
+                display: flex !important;
+            }
+            .modal.read-mode .editor-sidebar .sidebar-section.attachment-section {
+                display: block !important;
+            }
+            .modal.read-mode .editor-sidebar .sidebar-section:last-child {
+                display: block !important;
+            }
+            .modal.read-mode .editor-main {
+                margin: 16px 0 16px 16px;
+                padding: 24px 32px;
+            }
         }
 
-        /* ===== 手机端核心修复 ===== */
+        /* ===== 手机端全屏阅读模式 ===== */
         @media (max-width: 767px) {
-            /* 主体改为纵向排列，避免重叠 */
             .notes-body {
                 flex-direction: column !important;
                 padding: 10px;
                 gap: 12px;
             }
-            /* 文件夹占满宽度，不在左侧浮动 */
             .folder-sidebar {
                 width: 100% !important;
                 flex-shrink: 1;
@@ -770,7 +842,6 @@
                 padding-right: 0;
                 margin-bottom: 12px;
             }
-            /* 笔记列表占满宽度，避免被挤压 */
             .notes-list-wrap {
                 width: 100% !important;
                 flex: none !important;
@@ -782,61 +853,250 @@
             .note-item .note-title {
                 font-size: 15px;
             }
-            /* 编辑器内也改为纵向 */
+
+            /* 模态框全屏 */
+            .modal .modal-content {
+                padding: 0;
+                height: 100vh;
+                max-height: 100vh;
+                width: 100vw;
+                max-width: 100vw;
+                border-radius: 0;
+                display: flex;
+                flex-direction: column;
+                background: #f6f8fa;
+            }
+
             .editor-body {
-                flex-direction: column !important;
+                flex: 1;
+                min-height: 0;
+                display: flex;
+                flex-direction: column;
+                background: #f6f8fa;
             }
+
             .editor-main {
-                margin: 4px;
-                padding: 12px;
-                width: auto;
+                flex: 1;
+                margin: 0;
+                padding: 4px 12px 12px;
+                border-radius: 0;
+                overflow-y: auto;
+                background: white;
+                min-height: 0;
+                display: flex;
+                flex-direction: column;
             }
-            .editor-sidebar {
-                width: 100% !important;
+
+            .md-preview {
+                flex: 1;
+                font-size: 15px;
+                line-height: 1.8;
+                padding: 8px 0;
+                overflow-y: auto;
+            }
+
+            .editor-main .md-editor textarea {
+                min-height: 300px;
+                font-size: 15px;
+                line-height: 1.8;
+                padding: 10px 12px;
+                flex: 1;
+            }
+
+            /* ===== 手机端阅读模式 ===== */
+            .modal.read-mode .editor-sidebar {
+                display: flex !important;
+                flex-direction: column;
+                padding: 8px 12px 12px;
+                background: #f5f6fa;
+                border-top: 1px solid #e8ecf1;
+                width: 100%;
+                flex-shrink: 0;
+                max-height: 180px;
+                overflow-y: auto;
+            }
+
+            .modal.read-mode .editor-sidebar .sidebar-section {
+                padding: 8px 10px;
+                background: white;
+                border-radius: 8px;
+                box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+                margin-bottom: 0;
+            }
+
+            .modal.read-mode .editor-sidebar .sidebar-section h4 {
+                font-size: 11px;
+                margin-bottom: 4px;
+            }
+
+            .modal.read-mode .editor-sidebar .sidebar-section .folder-select {
+                font-size: 12px;
+                padding: 4px 8px;
+            }
+
+            .modal.read-mode .editor-sidebar .sidebar-section.attachment-section .section-header {
+                padding: 2px 0;
+            }
+
+            .modal.read-mode .editor-sidebar .sidebar-section.attachment-section #attachmentContent {
+                max-height: 60px;
+                overflow-y: auto;
+            }
+
+            .modal.read-mode .editor-sidebar .sidebar-section:last-child {
+                display: block !important;
+            }
+
+            .modal.read-mode .editor-main {
+                padding: 4px 12px 8px;
+                margin: 0;
+                border-radius: 0;
+                flex: 1;
+                min-height: 0;
+            }
+
+            .modal.read-mode .md-preview {
+                font-size: 15px;
+                line-height: 1.8;
+            }
+
+            .modal.read-mode .editor-toolbar {
+                padding: 6px 12px;
+                flex-shrink: 0;
+                background: white;
+                border-bottom: 1px solid #e8ecf1;
+            }
+
+            .modal.read-mode .editor-toolbar .toolbar-left .editor-title {
+                font-size: 15px;
+                max-width: 180px;
+                font-weight: 600;
+            }
+
+            .modal.read-mode .editor-toolbar .toolbar-right .btn {
+                display: none;
+            }
+            .modal.read-mode .editor-toolbar .toolbar-right .btn-secondary {
+                display: none;
+            }
+            .modal.read-mode .editor-toolbar .toolbar-right .btn-primary {
+                display: none;
+            }
+            .modal.read-mode .editor-toolbar .toolbar-right .edit-read-btn {
+                display: inline-block !important;
+            }
+
+            .modal.read-mode .md-toolbar {
+                display: none !important;
+            }
+
+            .modal.read-mode .field-group input[type="text"] {
+                font-size: 18px;
+                padding: 8px 0;
+                border-bottom: none;
+                font-weight: 700;
+                color: #1a1a1a;
+                background: transparent;
+            }
+
+            /* ===== 手机端编辑模式 ===== */
+            .modal.edit-mode .editor-sidebar {
+                display: flex !important;
+                flex-direction: column;
+                gap: 8px;
                 padding: 8px 12px 16px;
-                flex-shrink: 1;
+                background: #f5f6fa;
+                border-top: 1px solid #e8ecf1;
+                max-height: 200px;
+                overflow-y: auto;
+                width: 100%;
             }
-            /* 编辑器工具栏适配 */
+
+            .modal.edit-mode .editor-sidebar .sidebar-section {
+                padding: 10px;
+                background: white;
+                border-radius: 10px;
+                box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+                margin-bottom: 0;
+            }
+
+            .modal.edit-mode .editor-sidebar .sidebar-section h4 {
+                font-size: 12px;
+                margin-bottom: 4px;
+            }
+
+            .modal.edit-mode .editor-sidebar .sidebar-section .folder-select {
+                font-size: 13px;
+                padding: 6px 10px;
+            }
+
+            .modal.edit-mode .editor-sidebar .sidebar-section.attachment-section #attachmentContent {
+                max-height: 80px;
+                overflow-y: auto;
+            }
+
+            .modal.edit-mode .editor-sidebar .sidebar-section.attachment-section .section-header {
+                padding: 2px 0;
+            }
+
+            .modal.edit-mode .editor-sidebar .sidebar-section:last-child {
+                display: block !important;
+            }
+
+            /* 编辑器工具栏 */
+            .editor-toolbar {
+                padding: 6px 12px;
+                flex-shrink: 0;
+                background: white;
+                border-bottom: 1px solid #e8ecf1;
+                z-index: 10;
+            }
+
             .editor-toolbar .toolbar-left .editor-title {
-                max-width: 100px;
                 font-size: 14px;
+                max-width: 120px;
+                overflow: hidden;
+                text-overflow: ellipsis;
+                white-space: nowrap;
             }
+
             .editor-toolbar .toolbar-right .btn {
-                padding: 4px 10px;
+                padding: 4px 12px;
                 font-size: 12px;
             }
+
             .editor-main .field-group input[type="text"] {
                 font-size: 16px;
                 padding: 8px 12px;
+                border: none;
+                border-bottom: 2px solid #e8ecf1;
+                border-radius: 0;
+                background: transparent;
+                font-weight: 600;
+                color: #1a1a1a;
             }
-            .editor-main .md-editor textarea {
-                min-height: 150px;
-                font-size: 14px;
-                padding: 10px 12px;
+            .editor-main .field-group input[type="text"]:focus {
+                border-bottom-color: #07c160;
+                box-shadow: none;
             }
-            .editor-main .md-preview {
-                font-size: 14px;
-                padding: 10px 12px;
+
+            .editor-main .field-group input[type="text"]:disabled {
+                background: transparent;
+                cursor: default;
+                border-bottom-color: transparent;
+            }
+
+            .editor-main .md-editor .md-toolbar {
+                flex-wrap: wrap;
+                gap: 2px;
+                padding: 4px 8px;
+                background: #f5f6fa;
+                border-bottom: 1px solid #e8ecf1;
+                border-radius: 8px 8px 0 0;
             }
             .editor-main .md-editor .md-toolbar button {
                 font-size: 12px;
                 padding: 3px 6px;
-            }
-            .editor-sidebar .sidebar-section {
-                padding: 12px;
-            }
-            .editor-sidebar .attachment-list {
-                max-height: 150px;
-            }
-            /* 附件的折叠切换在手机端生效 */
-            .editor-sidebar .sidebar-section.attachment-section .section-header {
-                cursor: pointer;
-            }
-            #attachmentContent.collapsed {
-                max-height: 0 !important;
-                padding: 0 !important;
-                margin: 0 !important;
-                overflow: hidden;
             }
         }
 
@@ -946,12 +1206,12 @@
                     </div>
                     <div style="margin-top:6px; font-size:12px; color:#8590a6; display:flex; flex-wrap:wrap; gap:8px;">
                         <span id="wordCount">0 字</span>
-                        <span>支持 Markdown · 拖拽或 Ctrl+V 粘贴图片</span>
+                        <span>支持 Markdown · 拖拽或 Ctrl+V 粘贴图片/视频</span>
                     </div>
                 </div>
             </div>
 
-            <!-- 右侧：信息栏（手机端在下方） -->
+            <!-- 右侧：信息栏 -->
             <div class="editor-sidebar">
                 <div class="sidebar-section">
                     <h4>📂 文件夹</h4>
@@ -960,7 +1220,7 @@
                     </select>
                 </div>
 
-                <!-- ===== 附件区域（可折叠） ===== -->
+                <!-- 附件区域 -->
                 <div class="sidebar-section attachment-section">
                     <div class="section-header" id="toggleAttachments">
                         <h4>📎 附件</h4>

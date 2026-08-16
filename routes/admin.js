@@ -14,9 +14,10 @@ const { onlineUsers, broadcastOnlineUsers, getIO } = require('../socket');
 const { safePath } = require('../utils/safePath');
 
 // 表名白名单（安全审计）
+// 修复 #31/#32：notes / note_attachments 已迁移至独立的 notes.db，从主库白名单中移除
 const ALLOWED_TABLES = [
     'users', 'messages', 'private_messages', 'message_reads', 'announcements',
-    'file_nodes', 'notes', 'note_attachments', 'user_sessions', 'user_traffic',
+    'file_nodes', 'user_sessions', 'user_traffic',
     'user_bans', 'email_blacklist', 'system_config', 'agreement_version', 'report_config',
     'chat_groups', 'group_members', 'group_ban_list', 'group_join_requests'
 ];
@@ -281,6 +282,8 @@ router.post('/api/admin/send-email-announcement', isAdmin, async (req, res) => {
     }
 });
 
+// routes/admin.js - 封禁管理部分（完整文件的其他部分保持不变）
+
 // ========== 封禁管理 ==========
 router.get('/api/admin/bans', isAdmin, (req, res) => {
     const bans = db.prepare(`
@@ -292,6 +295,7 @@ router.get('/api/admin/bans', isAdmin, (req, res) => {
     res.json({ success: true, bans });
 });
 
+// ========== 修复：添加封禁（支持到期时间） ==========
 router.post('/api/admin/bans', isAdmin, (req, res) => {
     const { userId, banType, reason, expiresAt } = req.body;
     if (!userId || !banType) return res.status(400).json({ success: false, message: '缺少必要参数' });
@@ -299,34 +303,75 @@ router.post('/api/admin/bans', isAdmin, (req, res) => {
     if (!validTypes.includes(banType)) return res.status(400).json({ success: false, message: '无效的封禁类型' });
     const user = db.prepare('SELECT userId FROM users WHERE userId = ?').get(userId);
     if (!user) return res.status(404).json({ success: false, message: '用户不存在' });
-    const expires = expiresAt ? new Date(expiresAt).toISOString() : null;
+    // 修复 #39：无效日期时给出友好提示，而不是抛出 RangeError 崩溃
+    let expires = null;
+    if (expiresAt) {
+        const parsed = new Date(expiresAt);
+        if (isNaN(parsed.getTime())) {
+            return res.status(400).json({ success: false, message: '封禁到期时间格式无效' });
+        }
+        expires = parsed.toISOString();
+    }
+    // 修复 #40：更新封禁时不重置 banned_at，保留首次封禁时间
     db.prepare(`
         INSERT INTO user_bans (user_id, ban_type, reason, expires_at) 
         VALUES (?, ?, ?, ?)
         ON CONFLICT(user_id, ban_type) DO UPDATE SET 
             reason = excluded.reason,
-            expires_at = excluded.expires_at,
-            banned_at = CURRENT_TIMESTAMP
+            expires_at = excluded.expires_at
     `).run(userId, banType, reason || null, expires);
-    logToFile(`管理员添加封禁: 用户 ${userId}, 类型 ${banType}, 原因 ${reason || '无'}`);
+    logToFile(`管理员添加封禁: 用户 ${userId}, 类型 ${banType}, 原因 ${reason || '无'}, 到期 ${expires || '永久'}`);
     res.json({ success: true });
 });
 
+// ========== 修复：解除封禁（确保记录被删除） ==========
 router.delete('/api/admin/bans/:userId/:banType', isAdmin, (req, res) => {
     const { userId, banType } = req.params;
-    db.prepare('DELETE FROM user_bans WHERE user_id = ? AND ban_type = ?').run(userId, banType);
+    
+    // 先检查是否存在该封禁记录
+    const ban = db.prepare('SELECT * FROM user_bans WHERE user_id = ? AND ban_type = ?').get(userId, banType);
+    if (!ban) {
+        return res.status(404).json({ success: false, message: '该封禁记录不存在' });
+    }
+    
+    // 删除封禁记录
+    const result = db.prepare('DELETE FROM user_bans WHERE user_id = ? AND ban_type = ?').run(userId, banType);
+    
+    if (result.changes === 0) {
+        return res.status(404).json({ success: false, message: '删除失败，记录不存在' });
+    }
+    
     logToFile(`管理员解除封禁: 用户 ${userId}, 类型 ${banType}`);
-    res.json({ success: true });
+    res.json({ success: true, message: '已解除封禁' });
 });
 
+// ========== 获取用户封禁列表 ==========
 router.get('/api/admin/bans/user/:userId', isAdmin, (req, res) => {
     const { userId } = req.params;
     const now = new Date().toISOString();
+    // 只返回未过期的封禁
     const bans = db.prepare(`
         SELECT * FROM user_bans 
         WHERE user_id = ? AND (expires_at IS NULL OR expires_at > ?)
         ORDER BY banned_at DESC
     `).all(userId, now);
+    res.json({ success: true, bans });
+});
+
+// ========== 获取所有用户封禁（包括已过期，但标记状态） ==========
+router.get('/api/admin/bans/all', isAdmin, (req, res) => {
+    const now = new Date().toISOString();
+    const bans = db.prepare(`
+        SELECT b.*, u.username,
+               CASE 
+                   WHEN b.expires_at IS NULL THEN '永久'
+                   WHEN b.expires_at <= ? THEN '已过期'
+                   ELSE '有效'
+               END as status
+        FROM user_bans b
+        LEFT JOIN users u ON b.user_id = u.userId
+        ORDER BY b.banned_at DESC
+    `).all(now);
     res.json({ success: true, bans });
 });
 
@@ -519,7 +564,13 @@ router.post('/api/admin/clean-request', isAdmin, (req, res) => {
     }
     content += `\n请确认后，将 "确定删除: 否" 改为 "确定删除: 是" 以执行。`;
 
-    fsSync.writeFileSync(filePath, content, 'utf8');
+    // 修复 #37：写入失败时返回错误信息，而不是静默崩溃
+    try {
+        fsSync.writeFileSync(filePath, content, 'utf8');
+    } catch (err) {
+        console.error('写入清理申请文件失败:', err);
+        return res.status(500).json({ success: false, message: '写入申请文件失败: ' + err.message });
+    }
     logToFile(`[清理申请] 管理员 ${req.session.userId} 创建申请文件 ${filename}`);
     res.json({ success: true, message: '清理申请已创建，请等待管理员审核。', filename });
 });
@@ -660,8 +711,12 @@ router.get('/api/admin/db/data', isAdmin, (req, res) => {
     if (!ALLOWED_TABLES.includes(table)) {
         return res.status(403).json({ success: false, message: '不允许查询此表' });
     }
+    // 修复 #76：limit 参数校验，NaN 或越界时使用默认值
+    let parsedLimit = parseInt(limit);
+    if (isNaN(parsedLimit) || parsedLimit < 1) parsedLimit = 100;
+    if (parsedLimit > 1000) parsedLimit = 1000;
     try {
-        const rows = db.prepare(`SELECT * FROM ${table} LIMIT ?`).all(parseInt(limit));
+        const rows = db.prepare(`SELECT * FROM ${table} LIMIT ?`).all(parsedLimit);
         res.json({ success: true, rows });
     } catch (err) {
         res.status(500).json({ success: false, message: err.message });
@@ -671,8 +726,16 @@ router.get('/api/admin/db/data', isAdmin, (req, res) => {
 router.post('/api/admin/db/query', isAdmin, (req, res) => {
     const { sql } = req.body;
     if (!sql) return res.status(400).json({ success: false });
+    if (typeof sql !== 'string') return res.status(400).json({ success: false, message: 'SQL 必须是字符串' });
     const upperSql = sql.trim().toUpperCase();
     if (!upperSql.startsWith('SELECT')) return res.status(403).json({ success: false, message: '只允许 SELECT 查询' });
+    // 修复 #34：禁止多语句执行与 PRAGMA/ATTACH 等特殊语句
+    if (/;\s*[a-z]/i.test(sql.trim().replace(/;\s*$/, ''))) {
+        return res.status(403).json({ success: false, message: '不允许执行多条语句' });
+    }
+    if (/\b(PRAGMA|ATTACH|DETACH|VACUUM|REINDEX|EXPLAIN|WITH)\b/i.test(upperSql)) {
+        return res.status(403).json({ success: false, message: '不允许执行特殊语句' });
+    }
     const lowerSql = sql.toLowerCase();
     let tableFound = false;
     for (const table of ALLOWED_TABLES) {
@@ -717,7 +780,13 @@ router.post('/api/admin/db/request-modify', isAdmin, (req, res) => {
     const filename = `modify_${timestamp}.txt`;
     const filePath = path.join(MODIFY_REQUESTS_DIR, filename);
     const content = `时间: ${now.toLocaleString()}\n申请内容: ${sql}\n确定修改: 否\n`;
-    fsSync.writeFileSync(filePath, content, 'utf8');
+    // 修复 #38：写入失败时返回错误信息
+    try {
+        fsSync.writeFileSync(filePath, content, 'utf8');
+    } catch (err) {
+        console.error('写入数据库修改申请文件失败:', err);
+        return res.status(500).json({ success: false, message: '写入申请文件失败: ' + err.message });
+    }
     logToFile(`[数据库修改申请] 管理员 ${req.session.userId} 创建申请文件 ${filename}`);
     res.json({ success: true, message: '申请已创建，请等待管理员审核（修改文件中的"确定修改"为"是"）。', filename });
 });

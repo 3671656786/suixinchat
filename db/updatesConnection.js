@@ -12,6 +12,7 @@ db._waitReady = () => db._readyPromise;
 
 let pendingOps = [];
 let _db = null;
+let realExec = null;
 
 (async () => {
     try {
@@ -32,14 +33,24 @@ let _db = null;
         function markDirty() {
             if (!dirty) { dirty = true; clearTimeout(saveTimer); saveTimer = setTimeout(flush, 2000); }
         }
+        // 修复 #54：flush 失败后保持 dirty 并重新调度重试，避免数据永久丢失
         function flush() {
             if (!dirty) return;
-            try { fs.writeFileSync(DB_PATH, Buffer.from(_db.export())); dirty = false; } catch (e) {}
+            try {
+                fs.writeFileSync(DB_PATH, Buffer.from(_db.export()));
+                dirty = false;
+            } catch (e) {
+                // 写入失败：保留 dirty，并重新调度重试（最多每分钟重试）
+                clearTimeout(saveTimer);
+                saveTimer = setTimeout(flush, 5000);
+                console.error('❌ 更新公告数据库保存失败，5秒后重试:', e.message);
+            }
         }
         function closeAll() { clearTimeout(saveTimer); flush(); try { _db.close(); } catch (e) {} }
 
         db.pragma = function(str) { _db.run('PRAGMA ' + str); };
         db.prepare = function(sql) {
+            if (!_db) throw new Error('数据库尚未初始化，请稍后重试');
             return {
                 all(...p) {
                     const s = _db.prepare(sql); if (p.length) s.bind(p);
@@ -60,7 +71,7 @@ let _db = null;
                 },
             };
         };
-        db.exec = function(sql) { _db.run(sql); markDirty(); };
+        realExec = function(sql) { _db.run(sql); markDirty(); };
         db.close = closeAll;
 
         for (const op of pendingOps) { try { db.exec(op.sql); } catch (e) {} }
@@ -74,6 +85,13 @@ let _db = null;
     }
 })();
 
-db.exec = function _pending(sql) { pendingOps.push({ sql }); };
+// 修复 #53：统一执行入口，数据库就绪前缓存操作
+db.exec = function _pending(sql) {
+    if (_db === null) {
+        pendingOps.push({ sql });
+    } else if (realExec) {
+        realExec(sql);
+    }
+};
 
 module.exports = db;

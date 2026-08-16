@@ -14,10 +14,14 @@ const { validateFileType } = require('../utils/fileValidator');
 // 获取消息历史（分页）
 router.get('/api/messages', isLoggedIn, (req, res) => {
     const { limit = 50, before } = req.query;
+    // 修复：limit 参数校验，避免 NaN 导致查询失败
+    let parsedLimit = parseInt(limit);
+    if (isNaN(parsedLimit) || parsedLimit < 1) parsedLimit = 50;
+    if (parsedLimit > 200) parsedLimit = 200;
     let query = 'SELECT * FROM messages WHERE groupId = 0';
     let params = [];
     if (before) { query += ' AND id < ?'; params.push(Number(before)); }
-    query += ' ORDER BY id DESC LIMIT ?'; params.push(parseInt(limit));
+    query += ' ORDER BY id DESC LIMIT ?'; params.push(parsedLimit);
     try {
         let messages = db.prepare(query).all(...params);
         messages = messages.reverse();
@@ -37,12 +41,15 @@ router.get('/api/search', isLoggedIn, (req, res) => {
         let query = 'SELECT * FROM messages WHERE groupId = 0';
         let params = [];
         if (keyword) {
-            query += ' AND content LIKE ?';
-            params.push(`%${keyword}%`);
+            // 修复：转义 LIKE 通配符 % 和 _（配合 ESCAPE），避免用户输入通配符时匹配所有消息
+            const escapedKeyword = String(keyword).replace(/[\\%_]/g, m => '\\' + m);
+            query += ' AND content LIKE ? ESCAPE \'\\\'';
+            params.push(`%${escapedKeyword}%`);
         }
         if (username) {
-            query += ' AND username LIKE ?';
-            params.push(`%${username}%`);
+            const escapedUsername = String(username).replace(/[\\%_]/g, m => '\\' + m);
+            query += ' AND username LIKE ? ESCAPE \'\\\'';
+            params.push(`%${escapedUsername}%`);
         }
         if (startDate) {
             query += ' AND date(timestamp) >= ?';
@@ -92,6 +99,11 @@ router.post('/api/upload', isLoggedIn, checkChatBan, async (req, res, next) => {
     }
     const fileSize = req.file.size;
     db.prepare(`INSERT INTO user_traffic (user_id, type, bytes, path) VALUES (?, 'upload', ?, ?)`).run(req.userId, fileSize, req.file.originalname);
+    // 修复 #19：普通用户聊天室上传计入全局容量，与撤回消息时的扣减保持一致
+    const uploader = db.prepare('SELECT role FROM users WHERE userId = ?').get(req.userId);
+    if (uploader && uploader.role !== 'admin') {
+        db.prepare(`UPDATE system_config SET value = CAST(value AS INTEGER) + ?, updated_at = datetime('now') WHERE key = 'total_upload_bytes'`).run(fileSize);
+    }
     logToFile(`[上传] 用户 ${req.userId} 上传文件: ${req.file.originalname} (${fileSize} bytes)`);
     res.json({ success: true, fileUrl: `/uploads/files/${req.file.filename}`, fileName: req.file.originalname, fileType: req.file.mimetype });
 });

@@ -166,6 +166,13 @@
         return date.toLocaleDateString();
     };
 
+    // truncateText - 按 Unicode 码点安全截断（修复 #73：避免截断中文字符产生乱码）
+    window.truncateText = function truncateText(text, maxLength) {
+        text = (text === null || text === undefined) ? '' : String(text);
+        if (text.length <= maxLength) return text;
+        return Array.from(text).slice(0, maxLength).join('') + '...';
+    };
+
     // apiRequest - API 请求函数（带超时处理）
     window.apiRequest = function apiRequest(url, method, body, timeout) {
         timeout = timeout || 30000;
@@ -187,8 +194,17 @@
         return fetch(url, options)
             .then(function(res) {
                 clearTimeout(timeoutId);
+                // 修复 #62：非 2xx 响应也尝试解析 JSON 错误信息，避免丢失后端 message
                 if (!res.ok) {
-                    throw new Error('HTTP ' + res.status + ': ' + res.statusText);
+                    return res.json().catch(function() {
+                        return null;
+                    }).then(function(body) {
+                        var msg = (body && body.message) ? body.message : ('HTTP ' + res.status + ': ' + res.statusText);
+                        var err = new Error(msg);
+                        err.status = res.status;
+                        err.body = body;
+                        throw err;
+                    });
                 }
                 return res.json();
             })

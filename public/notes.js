@@ -199,7 +199,7 @@ function fallbackCopy(text, button) {
     document.body.removeChild(textarea);
 }
 
-// ========== Markdown 渲染（兼容 marked.js 新旧版本） ==========
+// ========== Markdown 渲染（支持视频 + 链接新窗口 + 代码块复制） ==========
 function renderMarkdown(text) {
     text = (typeof text === 'string') ? text : (text != null ? String(text) : '');
     if (!text) return '';
@@ -208,29 +208,46 @@ function renderMarkdown(text) {
         if (typeof marked !== 'undefined') {
             var renderer = new marked.Renderer();
 
-            // ========== 兼容 link 渲染器 ==========
+            // 修复 #25：拦截 javascript:/data: 等危险协议链接，防止 XSS
+            function isSafeUrl(href) {
+                var trimmed = String(href || '').trim().toLowerCase();
+                if (!trimmed) return false;
+                if (/^(javascript|vbscript|data):/.test(trimmed)) return false;
+                return true;
+            }
+
+            // 修复 #25：raw HTML 一律转义为文本显示，防止笔记内容注入恶意 HTML
+            renderer.html = function(html) {
+                if (html && typeof html === 'object' && html.text !== undefined) {
+                    html = html.text || '';
+                }
+                return window.escapeHtml(String(html));
+            };
+
+            // link 渲染器
             renderer.link = function(href, title, text) {
-                // 判断是否为新版 API（第一个参数是对象）
                 if (href && typeof href === 'object' && href.href !== undefined) {
                     var token = href;
                     href = token.href || '';
                     title = token.title || '';
                     text = token.text || '';
-                    // 如果 text 为空但有 tokens，用 parser 解析
                     if (!text && token.tokens && this.parser) {
                         text = this.parser.parseInline(token.tokens);
                     }
                 }
-                // 确保是字符串
                 href = (typeof href === 'string') ? href : (href != null ? String(href) : '');
                 if (!href) return text || '';
+                // 修复 #25：危险协议链接不渲染为可点击链接
+                if (!isSafeUrl(href)) {
+                    return '<span class="unsafe-link">' + window.escapeHtml(text || href) + '</span>';
+                }
                 title = (typeof title === 'string') ? title : (title != null ? String(title) : '');
                 text = (typeof text === 'string') ? text : (text != null ? String(text) : '');
                 var titleAttr = title ? ' title="' + title.replace(/"/g, '&quot;') + '"' : '';
                 return '<a href="' + href.replace(/"/g, '&quot;') + '"' + titleAttr + ' target="_blank" rel="noopener noreferrer">' + text + '</a>';
             };
 
-            // ========== 兼容 image 渲染器 ==========
+            // image 渲染器
             renderer.image = function(href, title, text) {
                 if (href && typeof href === 'object' && href.href !== undefined) {
                     var token = href;
@@ -240,6 +257,8 @@ function renderMarkdown(text) {
                 }
                 href = (typeof href === 'string') ? href : (href != null ? String(href) : '');
                 if (!href) return '';
+                // 修复 #25：危险协议图片不渲染
+                if (!isSafeUrl(href)) return '';
                 title = (typeof title === 'string') ? title : (title != null ? String(title) : '');
                 text = (typeof text === 'string') ? text : (text != null ? String(text) : '');
                 var titleAttr = title ? ' title="' + title.replace(/"/g, '&quot;') + '"' : '';
@@ -255,9 +274,8 @@ function renderMarkdown(text) {
                 return '<img src="' + href.replace(/"/g, '&quot;') + '" alt="' + altText.replace(/"/g, '&quot;') + '"' + titleAttr + ' style="max-width:100%;border-radius:8px;">';
             };
 
-            // ========== 兼容 code 渲染器 ==========
+            // code 渲染器
             renderer.code = function(code, language) {
-                // 新版 API 可能传入一个对象
                 if (code && typeof code === 'object' && code.text !== undefined) {
                     var token = code;
                     code = token.text || '';
@@ -269,14 +287,9 @@ function renderMarkdown(text) {
                     var escapedCode = window.escapeHtml(code);
                     var codeId = 'code-' + Date.now() + '-' + Math.random().toString(36).substr(2, 6);
 
-                    return '<div class="code-block-wrapper" style="position:relative;margin:12px 0;border-radius:8px;overflow:hidden;background:#1e1e1e;border:1px solid #333;">' +
-                        '<div style="display:flex;justify-content:space-between;align-items:center;padding:6px 12px;background:#2d2d2d;border-bottom:1px solid #444;font-size:12px;color:#999;font-family:monospace;">' +
-                        '<span>' + langLabel + '</span>' +
-                        '<button class="copy-code-btn" data-target="' + codeId + '" style="background:transparent;border:1px solid #555;color:#ccc;padding:2px 10px;border-radius:4px;cursor:pointer;font-size:12px;transition:all 0.2s;">📋 复制</button>' +
-                        '</div>' +
-                        '<pre style="margin:0;padding:12px 16px;overflow-x:auto;background:#1e1e1e;font-family:\'Consolas\',\'Monaco\',monospace;font-size:13px;line-height:1.6;color:#d4d4d4;">' +
-                        '<code id="' + codeId + '" style="font-family:inherit;color:inherit;">' + escapedCode + '</code>' +
-                        '</pre>' +
+                    return '<div class="code-block-wrapper">' +
+                        '<div class="code-header"><span>' + langLabel + '</span><button class="copy-code-btn" data-target="' + codeId + '">📋 复制</button></div>' +
+                        '<pre><code id="' + codeId + '">' + escapedCode + '</code></pre>' +
                         '</div>';
                 } catch (e) {
                     console.warn('[renderer.code] 自定义渲染失败，使用默认格式', e);
@@ -309,8 +322,6 @@ function renderMarkdown(text) {
     }
 }
 
-// ========== 以下为原有的 UI 交互逻辑（保持不变）==========
-
 function updatePreview() {
     var raw = noteContentInput.value;
     notePreview.innerHTML = renderMarkdown(raw);
@@ -337,7 +348,7 @@ function togglePreview() {
     }
 }
 
-// 工具栏快捷插入
+// ========== 工具栏快捷插入 ==========
 document.querySelector('.md-toolbar')?.addEventListener('click', function(e) {
     var btn = e.target.closest('button');
     if (!btn) return;
@@ -566,7 +577,7 @@ fileInput.addEventListener('change', function() {
     fileInput.value = '';
 });
 
-// ========== 文件夹与笔记加载 ==========
+// ========== 加载文件夹 ==========
 function loadFolders() {
     return window.apiRequest('/api/note-folders', 'GET').then(function(res) {
         if (res.success) {
@@ -725,6 +736,7 @@ function populateFolderSelect(selectEl) {
     selectEl.innerHTML = html;
 }
 
+// ========== 加载笔记 ==========
 function loadNotes(folderId) {
     var url = '/api/notes';
     if (folderId !== undefined) {
@@ -748,6 +760,7 @@ function loadNotes(folderId) {
     });
 }
 
+// ========== 渲染笔记列表 ==========
 function renderNotes(notes) {
     if (!notes || notes.length === 0) {
         notesList.innerHTML = '<div class="note-empty">📝 暂无笔记</div>';
@@ -825,7 +838,7 @@ function renderNotes(notes) {
     }
 }
 
-// ========== 阅读模式 ==========
+// ========== 阅读模式（全屏） ==========
 function openNoteForRead(id) {
     var note = notes.find(function(n) { return n.id === id; });
     if (!note) return;
@@ -844,6 +857,23 @@ function openNoteForRead(id) {
     saveEditorBtn.style.display = 'none';
     var toolbar = document.querySelector('.md-toolbar');
     if (toolbar) toolbar.style.display = 'none';
+
+    // ========== 手机端全屏阅读模式 ==========
+    var modal = document.getElementById('editorModal');
+    if (modal) {
+        modal.classList.remove('edit-mode');
+        modal.classList.add('read-mode');
+    }
+
+    // 隐藏附件栏和信息栏
+    var attachSection = document.querySelector('.sidebar-section.attachment-section');
+    if (attachSection) {
+        attachSection.style.display = 'none';
+    }
+    var infoSection = document.querySelector('.editor-sidebar .sidebar-section:last-child');
+    if (infoSection) {
+        infoSection.style.display = 'none';
+    }
 
     if (isAdmin) {
         var editReadBtn = document.querySelector('.toolbar-right .edit-read-btn');
@@ -899,6 +929,21 @@ function openNoteForEdit(id) {
     var toolbar = document.querySelector('.md-toolbar');
     if (toolbar) toolbar.style.display = 'flex';
 
+    var modal = document.getElementById('editorModal');
+    if (modal) {
+        modal.classList.remove('read-mode');
+        modal.classList.add('edit-mode');
+    }
+
+    var attachSection = document.querySelector('.sidebar-section.attachment-section');
+    if (attachSection) {
+        attachSection.style.display = 'block';
+    }
+    var infoSection = document.querySelector('.editor-sidebar .sidebar-section:last-child');
+    if (infoSection) {
+        infoSection.style.display = 'block';
+    }
+
     var editReadBtn = document.querySelector('.toolbar-right .edit-read-btn');
     if (editReadBtn) editReadBtn.style.display = 'none';
 
@@ -926,10 +971,18 @@ function openNoteForEdit(id) {
     }
 }
 
+// ========== 关闭编辑器 ==========
 function closeEditor() {
     editorModal.classList.remove('active');
     document.body.style.overflow = '';
     isViewMode = false;
+
+    var modal = document.getElementById('editorModal');
+    if (modal) {
+        modal.classList.remove('read-mode');
+        modal.classList.remove('edit-mode');
+    }
+
     noteTitleInput.disabled = false;
     noteContentInput.disabled = false;
     saveEditorBtn.style.display = 'inline-block';
@@ -943,6 +996,16 @@ function closeEditor() {
     togglePreviewBtn.textContent = '👁️ 预览';
     var editReadBtn = document.querySelector('.toolbar-right .edit-read-btn');
     if (editReadBtn) editReadBtn.style.display = 'none';
+
+    var attachSection = document.querySelector('.sidebar-section.attachment-section');
+    if (attachSection) {
+        attachSection.style.display = 'block';
+    }
+    var infoSection = document.querySelector('.editor-sidebar .sidebar-section:last-child');
+    if (infoSection) {
+        infoSection.style.display = 'block';
+    }
+
     loadNotes();
     loadFolders();
 }

@@ -1,8 +1,11 @@
 {
   "name": "suixinchat",
-  "version": "2.5.0",
+  "version": "3.0.0",
   "description": "随心聊 - 实时聊天网站，含聊天室、网盘、云笔记、管理后台",
   "main": "server.js",
+  "engines": {
+    "node": ">=18.0.0"
+  },
   "scripts": {
     "start": "node server.js",
     "dev": "nodemon server.js"

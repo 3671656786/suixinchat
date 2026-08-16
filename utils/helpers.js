@@ -1,9 +1,18 @@
 // utils/helpers.js
 const { EMOJI_MAP, MAX_MESSAGE_LENGTH } = require('../config');
+const crypto = require('crypto');
 
+// 修复 #5：转义 & < > " ' 和反引号，防止属性注入与 XSS
 function escapeHtml(text) {
-    if (!text) return '';
-    return text.replace(/[&<>]/g, m => m === '&' ? '&amp;' : m === '<' ? '&lt;' : '&gt;');
+    if (text === null || text === undefined) return '';
+    return String(text).replace(/[&<>"'`]/g, m => ({
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        '"': '&quot;',
+        "'": '&#39;',
+        '`': '&#96;'
+    }[m]));
 }
 
 function escapeHtmlAttr(text) {
@@ -48,15 +57,22 @@ function formatFileSize(bytes) {
     return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
 }
 
+// 修复 #63：使用密码学安全随机数生成验证码，避免 Math.random() 可预测
 function generateVerificationCode() {
-    return Math.floor(100000 + Math.random() * 900000).toString();
+    return crypto.randomInt(100000, 1000000).toString();
 }
 
-// #3-低 修复：正确处理代理链
+// #65 修复：正确处理代理链。
+// x-forwarded-for 格式为 "client, proxy1, proxy2"，取最后一个非空值作为来源 IP，
+// 避免直接伪造 X-Forwarded-For 头将限流目标指向内网/伪造地址。
 function getClientIp(req) {
     const forwarded = req.headers['x-forwarded-for'];
     if (forwarded) {
-        return forwarded.split(',')[0].trim();
+        const parts = String(forwarded).split(',');
+        for (let i = parts.length - 1; i >= 0; i--) {
+            const ip = parts[i].trim();
+            if (ip) return ip;
+        }
     }
     return req.socket?.remoteAddress || req.connection?.remoteAddress || 'unknown';
 }
@@ -65,11 +81,13 @@ function isValidMessageLength(content) {
     return !content || content.length <= MAX_MESSAGE_LENGTH;
 }
 
+// 修复 #64：使用密码学安全随机数生成随机字符串
 function generateRandomString(length = 8) {
     const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+    const bytes = crypto.randomBytes(length);
     let result = '';
     for (let i = 0; i < length; i++) {
-        result += chars.charAt(Math.floor(Math.random() * chars.length));
+        result += chars[bytes[i] % chars.length];
     }
     return result;
 }
@@ -80,6 +98,14 @@ function safeJsonParse(str, defaultValue = null) {
     } catch (e) {
         return defaultValue;
     }
+}
+
+// 修复 #73：按 Unicode 码点安全截断（后端版），避免截断中文字符/emoji 产生乱码
+function truncateText(text, maxLength) {
+    if (text === null || text === undefined) return '';
+    text = String(text);
+    if (text.length <= maxLength) return text;
+    return Array.from(text).slice(0, maxLength).join('');
 }
 
 module.exports = {
@@ -93,5 +119,6 @@ module.exports = {
     getClientIp,
     isValidMessageLength,
     generateRandomString,
-    safeJsonParse
+    safeJsonParse,
+    truncateText
 };
