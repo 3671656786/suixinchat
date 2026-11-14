@@ -62,3 +62,8 @@ discuzx/
 
 # 工作区助手数据（含本机环境信息，不提交到公开仓库）
 .workbuddy/
+
+# v4 运行时数据与本地配置（含密钥，不进入发布包）
+v4/data/*
+!v4/data/.gitkeep
+v4/config.local.php
