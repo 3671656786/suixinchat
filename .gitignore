@@ -67,3 +67,6 @@ discuzx/
 v4/data/*
 !v4/data/.gitkeep
 v4/config.local.php
+
+# 生成的发布包
+dist/
