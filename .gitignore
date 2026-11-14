@@ -64,9 +64,9 @@ discuzx/
 .workbuddy/
 
 # v4 运行时数据与本地配置（含密钥，不进入发布包）
-v4/data/*
-!v4/data/.gitkeep
-v4/config.local.php
+data/*
+!data/.gitkeep
+config.local.php
 
 # 生成的发布包
 dist/

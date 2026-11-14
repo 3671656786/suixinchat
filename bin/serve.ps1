@@ -1,5 +1,5 @@
 # Suixin Community v4 - local development launcher
-# Requires PHP 8.1+ on PATH and MariaDB/MySQL matching v4/config.php
+# Requires PHP 8.1+ on PATH and MariaDB/MySQL matching config.php
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 $public = Join-Path $root "public"

@@ -57,7 +57,7 @@
 php bin/install.php
 #    需要重置演示数据时：php bin/install.php --fresh
 
-# 3. 启动（在 v4/ 目录下）
+# 3. 启动（在仓库根目录）
 php -S 127.0.0.1:8081 -t public public/router.php
 #    Windows 也可运行：powershell -File bin/serve.ps1
 
@@ -69,7 +69,7 @@ php bin/smoke.php http://127.0.0.1:8081
 
 ---
 
-## 🧱 目录结构（位于 `v4/`）
+## 🧱 目录结构
 
 ```
 ├── config.php            # 版本、站点、九个分库映射
